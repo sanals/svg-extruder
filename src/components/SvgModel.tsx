@@ -73,14 +73,15 @@ interface SvgModelProps {
   cutOverlaps: boolean;
   selectedMeshIndices: number[];
   meshDepths: Record<number, number>;
+  meshColorOverrides?: Record<number, string>;
   onSelect: (indices: number[], shiftKey: boolean) => void;
   onVerticesCalculated?: (count: number) => void;
   onParseProgress?: (msg: string) => void;
-  onParseComplete?: () => void;
+  onParseComplete?: (meshColors: { index: number, colorHex: string }[]) => void;
 }
 
 export const SvgModel: React.FC<SvgModelProps> = ({ 
-  svgUrl, selectByColor, sealGaps, cutOverlaps, selectedMeshIndices, meshDepths, onSelect, onVerticesCalculated, onParseProgress, onParseComplete 
+  svgUrl, selectByColor, sealGaps, cutOverlaps, selectedMeshIndices, meshDepths, meshColorOverrides = {}, onSelect, onVerticesCalculated, onParseProgress, onParseComplete 
 }) => {
   const svgData = useLoader(SVGLoader, svgUrl);
   const groupRef = React.useRef<THREE.Group>(null);
@@ -295,7 +296,9 @@ export const SvgModel: React.FC<SvgModelProps> = ({
           
           const validGroups = individualShapes.filter(g => g.shapes.length > 0);
           setShapesWithColors(validGroups);
-          if (onParseComplete) onParseComplete();
+          if (onParseComplete) {
+            onParseComplete(validGroups.map((g, i) => ({ index: i, colorHex: g.colorHex })));
+          }
         };
 
         if (!cutOverlaps) {
@@ -355,7 +358,7 @@ export const SvgModel: React.FC<SvgModelProps> = ({
 
       } catch(e) {
         console.error("Error during parse step", e);
-        if (onParseComplete) onParseComplete();
+        if (onParseComplete) onParseComplete([]);
       }
     };
 
@@ -386,7 +389,13 @@ export const SvgModel: React.FC<SvgModelProps> = ({
     <group ref={groupRef} scale={[0.1, -0.1, 0.1]} position={[-5, 5, 0]}>
       {shapesWithColors.map((item, index) => {
         const isSelected = selectedMeshIndices.includes(index);
-        const color = isSelected ? "hotpink" : item.color;
+        
+        // Apply color overrides if they exist
+        const overriddenHex = meshColorOverrides[index];
+        const baseColorHex = overriddenHex ?? item.colorHex;
+        const baseColor = overriddenHex ? new THREE.Color(`#${overriddenHex}`) : item.color;
+        
+        const color = isSelected ? "hotpink" : baseColor;
         const depth = meshDepths[index] ?? 0;
 
         // Base offset to prevent z-fighting (still slightly useful even after boolean subtraction due to precision issues)
@@ -401,12 +410,14 @@ export const SvgModel: React.FC<SvgModelProps> = ({
           <mesh 
             key={index} 
             position={[0, 0, zPosition]}
-            userData={{ originalColorHex: item.colorHex, originalZPosition: baseZOffset }}
+            userData={{ originalColorHex: baseColorHex, originalZPosition: baseZOffset }}
             onClick={(e) => {
               e.stopPropagation();
-              const clickedItem = shapesWithColors[index];
               const indices = selectByColor 
-                ? shapesWithColors.map((item, i) => item.colorHex === clickedItem.colorHex ? i : -1).filter(i => i !== -1)
+                ? shapesWithColors.map((it, i) => {
+                    const currentHex = meshColorOverrides[i] ?? it.colorHex;
+                    return currentHex === baseColorHex ? i : -1;
+                  }).filter(i => i !== -1)
                 : [index];
               onSelect(indices, e.shiftKey);
             }}

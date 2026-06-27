@@ -20,8 +20,58 @@ function App() {
   const [cutOverlaps, setCutOverlaps] = useState<boolean>(true);
   const [mergeBeforeExport, setMergeBeforeExport] = useState<boolean>(true);
   const [history, setHistory] = useState<Record<number, number>[]>([]);
+  const [meshColors, setMeshColors] = useState<{ index: number, colorHex: string }[]>([]);
+  const [meshColorOverrides, setMeshColorOverrides] = useState<Record<number, string>>({});
+  const [isMerging, setIsMerging] = useState(false);
   
   const sceneRef = useRef<THREE.Group>(null);
+
+  const currentMeshColors = meshColors.map(m => ({
+    index: m.index,
+    colorHex: meshColorOverrides[m.index] || m.colorHex
+  }));
+
+  const getLuminance = (hex: string) => {
+    const rgb = parseInt(hex, 16);
+    const r = (rgb >> 16) & 0xff;
+    const g = (rgb >>  8) & 0xff;
+    const b = (rgb >>  0) & 0xff;
+    return 0.299 * r + 0.587 * g + 0.114 * b;
+  };
+
+  const uniqueColors = Array.from(new Set(currentMeshColors.map(m => m.colorHex)))
+    .sort((a, b) => getLuminance(b) - getLuminance(a)); // Lightest to darkest
+
+  const toggleColorSelection = (colorHex: string) => {
+    const indicesOfColor = currentMeshColors.filter(m => m.colorHex === colorHex).map(m => m.index);
+    
+    // Check if all of these are already selected
+    const allSelected = indicesOfColor.every(idx => selectedMeshIndices.includes(idx));
+    
+    if (allSelected) {
+      // Unselect them
+      setSelectedMeshIndices(prev => prev.filter(idx => !indicesOfColor.includes(idx)));
+    } else {
+      // Select them (append to existing selection)
+      setSelectedMeshIndices(prev => [...new Set([...prev, ...indicesOfColor])]);
+    }
+  };
+
+  const selectedUniqueColors = Array.from(new Set(
+    selectedMeshIndices.map(idx => currentMeshColors.find(m => m.index === idx)?.colorHex).filter(Boolean) as string[]
+  ));
+
+  const handleMergeColors = (targetColorHex: string) => {
+    setMeshColorOverrides(prev => {
+      const next = { ...prev };
+      selectedMeshIndices.forEach(idx => {
+        next[idx] = targetColorHex;
+      });
+      return next;
+    });
+    setIsMerging(false);
+    setSelectedMeshIndices([]);
+  };
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -37,6 +87,9 @@ function App() {
           setMeshDepths({});
           setVertexCount(0); // Reset vertices
           setHistory([]); // Reset history
+          setMeshColors([]); // Reset colors
+          setMeshColorOverrides({});
+          setIsMerging(false);
         }, 50);
       } else if (file.type === 'image/png' || file.type === 'image/jpeg') {
         const url = URL.createObjectURL(file);
@@ -79,6 +132,9 @@ function App() {
                     setMeshDepths({});
                     setVertexCount(0);
                     setHistory([]);
+                    setMeshColors([]);
+                    setMeshColorOverrides({});
+                    setIsMerging(false);
                   },
                   {
                     numberofcolors: 8, // Reduced from 16 to keep geometry simpler
@@ -380,6 +436,99 @@ function App() {
           </label>
         </div>
 
+        {uniqueColors.length > 0 && (
+          <div className="control-group" style={{ marginTop: '0.5rem' }}>
+            <label style={{ fontSize: '0.8rem', color: '#94a3b8', display: 'block', marginBottom: '0.5rem' }}>
+              Colors Used <span style={{ fontSize: '0.65rem', color: '#64748b', fontWeight: 'normal', float: 'right' }}>(Drag corner to expand)</span>
+            </label>
+            <div className="colors-scroll-container" style={{ 
+              display: 'flex', flexWrap: 'wrap', gap: '0.5rem',
+              height: '160px', minHeight: '80px', maxHeight: '60vh', overflowY: 'auto', alignContent: 'flex-start',
+              paddingRight: '4px', resize: 'vertical', border: '1px solid #1e293b'
+            }}>
+              {uniqueColors.map(colorHex => {
+                const indicesOfColor = currentMeshColors.filter(m => m.colorHex === colorHex).map(m => m.index);
+                const isAllSelected = indicesOfColor.length > 0 && indicesOfColor.every(idx => selectedMeshIndices.includes(idx));
+                const isPartiallySelected = !isAllSelected && indicesOfColor.some(idx => selectedMeshIndices.includes(idx));
+                
+                return (
+                  <div
+                    key={colorHex}
+                    onClick={() => toggleColorSelection(colorHex)}
+                    style={{
+                      width: '24px',
+                      height: '24px',
+                      backgroundColor: `#${colorHex}`,
+                      borderRadius: '4px',
+                      cursor: 'pointer',
+                      border: isAllSelected ? '2px solid #fff' : isPartiallySelected ? '2px solid #60a5fa' : '1px solid #334155',
+                      boxShadow: (isAllSelected || isPartiallySelected) ? '0 0 0 1px #3b82f6' : 'none',
+                      position: 'relative',
+                      boxSizing: 'border-box'
+                    }}
+                    title={`#${colorHex}`}
+                  >
+                    {isAllSelected && (
+                      <div style={{
+                        position: 'absolute', top: '-6px', right: '-6px',
+                        background: '#3b82f6', color: 'white', borderRadius: '50%',
+                        width: '14px', height: '14px', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        fontSize: '9px', fontWeight: 'bold'
+                      }}>
+                        ✓
+                      </div>
+                    )}
+                    {isPartiallySelected && (
+                      <div style={{
+                        position: 'absolute', top: '-6px', right: '-6px',
+                        background: '#64748b', color: 'white', borderRadius: '50%',
+                        width: '14px', height: '14px', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        fontSize: '12px', fontWeight: 'bold', lineHeight: 1
+                      }}>
+                        -
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            {selectedUniqueColors.length > 1 && !isMerging && (
+              <button 
+                onClick={() => setIsMerging(true)}
+                style={{ marginTop: '0.5rem', fontSize: '0.8rem', padding: '0.4rem', backgroundColor: '#8b5cf6' }}
+              >
+                Merge Selected Colors
+              </button>
+            )}
+
+            {isMerging && (
+              <div style={{ marginTop: '0.5rem', backgroundColor: '#334155', padding: '0.5rem', borderRadius: '4px' }}>
+                <div style={{ fontSize: '0.75rem', marginBottom: '0.5rem', color: '#cbd5e1' }}>Select target color:</div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
+                  {selectedUniqueColors.map(colorHex => (
+                    <div
+                      key={`target-${colorHex}`}
+                      onClick={() => handleMergeColors(colorHex)}
+                      style={{
+                        width: '24px', height: '24px', backgroundColor: `#${colorHex}`,
+                        borderRadius: '4px', cursor: 'pointer', border: '1px solid #1e293b'
+                      }}
+                      title={`Merge into #${colorHex}`}
+                    />
+                  ))}
+                </div>
+                <button 
+                  onClick={() => setIsMerging(false)}
+                  style={{ marginTop: '0.5rem', fontSize: '0.7rem', padding: '0.2rem 0.5rem', backgroundColor: 'transparent', border: '1px solid #64748b' }}
+                >
+                  Cancel
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
         <div style={{ marginTop: 'auto' }}>
           <div className="control-group">
             <label className="checkbox-label" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}>
@@ -439,6 +588,7 @@ function App() {
                     cutOverlaps={cutOverlaps}
                     selectedMeshIndices={selectedMeshIndices}
                     meshDepths={meshDepths}
+                    meshColorOverrides={meshColorOverrides}
                     onSelect={(indices, shiftKey) => {
                       setSelectedMeshIndices(prev => {
                         if (shiftKey) {
@@ -454,7 +604,10 @@ function App() {
                     }}
                     onVerticesCalculated={setVertexCount}
                     onParseProgress={(msg) => setIsTracing(msg)}
-                    onParseComplete={() => setIsTracing(null)}
+                    onParseComplete={(extractedColors) => {
+                      setIsTracing(null);
+                      if (extractedColors) setMeshColors(extractedColors);
+                    }}
                   />
                 </group>
               </Center>
