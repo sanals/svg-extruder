@@ -18,7 +18,7 @@ export interface PrintPlate {
 /**
  * Builds a multi-plate Bambu Studio compatible 3MF file from an array of physical plates.
  */
-export async function buildMultiPlate3MF(plates: PrintPlate[], options?: { printerModel?: string }): Promise<Blob> {
+export async function buildMultiPlate3MF(plates: PrintPlate[], options?: { printerModel?: string, groupIntoOneObject?: boolean }): Promise<Blob> {
   const zip = new JSZip()
   const TRAY_SIZE_X = options?.printerModel === 'a1_mini' ? 180 : 256
   const TRAY_SIZE_Y = options?.printerModel === 'a1_mini' ? 180 : 256
@@ -63,9 +63,11 @@ export async function buildMultiPlate3MF(plates: PrintPlate[], options?: { print
     const cx = minX === Infinity ? 0 : (minX + maxX) / 2
     const cy = minY === Infinity ? 0 : (minY + maxY) / 2
 
-    // First pass: generate all templates for this plate
+    const groupIntoOneObject = options?.groupIntoOneObject !== false
+
     const componentXmls: string[] = []
     const partSettingsXmls: string[] = []
+    const plateObjectIds: number[] = []
 
     plate.items.forEach((item) => {
       const templateId = nextObjectId++
@@ -108,17 +110,41 @@ export async function buildMultiPlate3MF(plates: PrintPlate[], options?: { print
       const item_ty = ty - cy
       const item_tz = tz
 
-      componentXmls.push(`        <component objectid="${templateId}" transform="1 0 0 0 1 0 0 0 1 ${fmt(item_tx)} ${fmt(item_ty)} ${fmt(item_tz)}"/>`)
-
-      partSettingsXmls.push(`    <part id="${templateId}" subtype="normal_part">
+      if (groupIntoOneObject) {
+        componentXmls.push(`        <component objectid="${templateId}" transform="1 0 0 0 1 0 0 0 1 ${fmt(item_tx)} ${fmt(item_ty)} ${fmt(item_tz)}"/>`)
+        partSettingsXmls.push(`    <part id="${templateId}" subtype="normal_part">
       <metadata key="name" value="${cleanName}"/>
       <metadata key="matrix" value="1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1"/>
       <metadata key="extruder" value="${extruderIndex}"/>
     </part>`)
+      } else {
+        plateObjectIds.push(templateId)
+        
+        let row = Math.floor(plateIdx / 3)
+        let col = plateIdx % 3
+        const match = plate.name.match(/_R(\d+)_C(\d+)/)
+        if (match) {
+          row = parseInt(match[1], 10) - 1
+          col = parseInt(match[2], 10) - 1
+        }
+        const PLATE_SPACING_X = TRAY_SIZE_X * 1.2
+        const PLATE_SPACING_Y = TRAY_SIZE_Y * 1.2
+        const globalX = col * PLATE_SPACING_X
+        const globalY = -row * PLATE_SPACING_Y
+        
+        buildItems.push(`    <item objectid="${templateId}" p:UUID="${generateUUID()}" transform="1 0 0 0 1 0 0 0 1 ${fmt(globalX + TRAY_SIZE_X / 2 + item_tx)} ${fmt(globalY + TRAY_SIZE_Y / 2 + item_ty)} ${fmt(item_tz)}" printable="1"/>`)
+        
+        modelSettingsObjects.push(`
+  <object id="${templateId}">
+    <metadata key="name" value="${cleanName}"/>
+    <metadata key="extruder" value="${extruderIndex}"/>
+  </object>`)
+      }
     })
 
-    if (componentXmls.length > 0) {
+    if (groupIntoOneObject && componentXmls.length > 0) {
       const masterId = nextObjectId++
+      plateObjectIds.push(masterId)
 
       objects.push(
         `    <object id="${masterId}" p:UUID="${generateUUID()}" type="model">\n` +
@@ -149,6 +175,9 @@ export async function buildMultiPlate3MF(plates: PrintPlate[], options?: { print
 ${partSettingsXmls.join("\n")}
   </object>`)
     }
+    
+    // Store plateObjectIds into the plate object temporarily so we can access it during the plateConfigs loop
+    (plate as any)._objectIds = plateObjectIds
   })
 
   const colorEntries = uniqueColors
@@ -177,20 +206,18 @@ ${buildItems.join("\n")}
 
   // 4. Assemble Bambu model_settings.config (Assigns extruders to objects)
   const plateConfigs = plates.map((plate, i) => {
-    // We can extract the masterId from modelSettingsObjects or just compute it.
-    // Actually, let's look at how modelSettingsObjects were built: each plate has exactly one masterId.
-    // It is pushed in order. We can parse it from modelSettingsObjects[i].
-    const match = modelSettingsObjects[i]?.match(/<object id="(\d+)">/);
-    const masterId = match ? match[1] : (i + 1).toString();
+    const objectIds: number[] = (plate as any)._objectIds || [];
+    
+    const instancesXml = objectIds.map(objId => `    <model_instance>
+      <metadata key="object_id" value="${objId}"/>
+      <metadata key="instance_id" value="0"/>
+    </model_instance>`).join("\n");
+
     return `
   <plate>
     <metadata key="plater_id" value="${i + 1}"/>
     <metadata key="plater_name" value="${(plate.name || "").replace(/[<>&"']/g, "")}"/>
-    <metadata key="locked" value="false"/>
-    <model_instance>
-      <metadata key="object_id" value="${masterId}"/>
-      <metadata key="instance_id" value="0"/>
-    </model_instance>
+${instancesXml}
   </plate>`;
   }).join("")
 

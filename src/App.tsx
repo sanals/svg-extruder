@@ -18,10 +18,11 @@ function App() {
   const [selectByColor, setSelectByColor] = useState<boolean>(false);
   const [sealGaps, setSealGaps] = useState<boolean>(true);
   const [cutOverlaps, setCutOverlaps] = useState<boolean>(true);
-  const [mergeBeforeExport, setMergeBeforeExport] = useState<boolean>(true);
+  const [mergeBeforeExport, setMergeBeforeExport] = useState<boolean>(false);
   const [history, setHistory] = useState<Record<string, number>[]>([]);
   const [meshColors, setMeshColors] = useState<{ id: string, colorHex: string }[]>([]);
   const [meshColorOverrides, setMeshColorOverrides] = useState<Record<string, string>>({});
+  const [mergeColors3MF, setMergeColors3MF] = useState(true);
   const [isMerging, setIsMerging] = useState(false);
   const [mergeMatching, setMergeMatching] = useState(true);
   const [fuseStatus, setFuseStatus] = useState<string | null>(null);
@@ -159,6 +160,7 @@ function App() {
         buildPlateSize,
         gridSize,
         printerModel,
+        mergeColors3MF,
         setExportStatus
       );
       
@@ -738,6 +740,15 @@ function App() {
               <Download size={18} />
               Export 3MF (Multi-Plate)
             </button>
+            
+            <label className="checkbox-label" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', marginBottom: '0.5rem' }}>
+              <input 
+                type="checkbox" 
+                checked={mergeColors3MF} 
+                onChange={(e) => setMergeColors3MF(e.target.checked)}
+              />
+              Join objects by color for 3MF
+            </label>
             
             <label className="checkbox-label" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', marginBottom: '0.5rem' }}>
               <input 
