@@ -25,11 +25,10 @@ function App() {
   const [mergeColors3MF, setMergeColors3MF] = useState<boolean>(true);
   const [isMerging, setIsMerging] = useState(false);
   const [mergeMatching, setMergeMatching] = useState(true);
-  const [zAlignment, setZAlignment] = useState<'bottom' | 'top'>('top');
   const [fuseStatus, setFuseStatus] = useState<string | null>(null);
 
   const [printerProfile, setPrinterProfile] = useState<'A1 Mini (180x180)' | 'X1/P1/A1 (256x256)'>('X1/P1/A1 (256x256)');
-  const [gridSize, setGridSize] = useState<string>("1x1");
+  const [gridSize, setGridSize] = useState<string>("auto");
   const buildPlateSize = printerProfile === 'A1 Mini (180x180)' ? 180 : 256;
   const printerModel = printerProfile === 'A1 Mini (180x180)' ? 'a1_mini' : 'x1c';
   const [exportStatus, setExportStatus] = useState<string | null>(null);
@@ -162,7 +161,6 @@ function App() {
         gridSize,
         printerModel,
         mergeColors3MF,
-        zAlignment,
         (msg) => setExportStatus(msg)
       );
 
@@ -721,30 +719,19 @@ function App() {
                 </select>
               </div>
               <div style={{ flex: 1 }}>
-                <label className="checkbox-label" style={{ fontSize: '0.75rem' }}>Grid Size</label>
+                <label className="checkbox-label" style={{ fontSize: '0.75rem' }}>Export Size & Layout</label>
                 <select
                   value={gridSize}
                   onChange={(e) => setGridSize(e.target.value)}
                   style={{ width: '100%', padding: '4px', borderRadius: '4px', border: '1px solid #334155', background: '#0f172a', color: 'white' }}
                 >
-                  <option value="1x1">1x1 (Single Plate)</option>
-                  <option value="2x2">2x2 (4 Plates)</option>
-                  <option value="1x2">1x2 (2 Plates Vertical)</option>
-                  <option value="2x1">2x1 (2 Plates Horizontal)</option>
+                  <option value="auto">Original Size (Auto-Grid, Max 2x2)</option>
+                  <option value="1x1">Scale to Fit: 1x1 Plate</option>
+                  <option value="2x2">Scale to Fit: 2x2 Plates</option>
+                  <option value="1x2">Scale to Fit: 1x2 (Vertical)</option>
+                  <option value="2x1">Scale to Fit: 2x1 (Horizontal)</option>
                 </select>
               </div>
-            </div>
-
-            <div style={{ marginBottom: '1rem' }}>
-              <label className="checkbox-label" style={{ fontSize: '0.75rem' }}>Z-Alignment (3D Position)</label>
-              <select
-                value={zAlignment}
-                onChange={(e) => setZAlignment(e.target.value as 'bottom' | 'top')}
-                style={{ width: '100%', padding: '4px', borderRadius: '4px', border: '1px solid #334155', background: '#0f172a', color: 'white', marginTop: '4px' }}
-              >
-                <option value="top">Top (Save Filament - Details float at top)</option>
-                <option value="bottom">Bottom (Standard - All colors start at bed)</option>
-              </select>
             </div>
 
             <button
@@ -813,7 +800,7 @@ function App() {
         )}
 
         {svgUrl && (
-          <Canvas camera={{ position: [0, 0, 100], fov: 50 }}>
+          <Canvas camera={{ position: [0, 0, 100], fov: 50 }} onPointerMissed={() => setSelectedMeshIds([])}>
             <ambientLight intensity={0.5} />
             <directionalLight position={[10, 10, 10]} intensity={1} castShadow />
             <OrbitControls makeDefault />
@@ -829,7 +816,6 @@ function App() {
                     selectedMeshIds={selectedMeshIds}
                     meshDepths={meshDepths}
                     meshColorOverrides={meshColorOverrides}
-                    zAlignment={zAlignment}
                     onSelect={(ids, shiftKey) => {
                       setSelectedMeshIds(prev => {
                         if (shiftKey) {
@@ -838,6 +824,11 @@ function App() {
                             return [...new Set([...prev, ...ids])];
                           } else {
                             return prev.filter(i => !ids.includes(i));
+                          }
+                        } else {
+                          // Unselect if clicking the exact same selection again
+                          if (prev.length === ids.length && ids.every(i => prev.includes(i))) {
+                            return [];
                           }
                         }
                         return ids;
