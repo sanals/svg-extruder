@@ -1,5 +1,5 @@
-import { useState, useRef, Suspense } from 'react';
-import { Upload, Download } from 'lucide-react';
+import { useState, useRef, Suspense, useEffect } from 'react';
+import { Upload, Download, Undo } from 'lucide-react';
 import { Canvas } from '@react-three/fiber';
 import { OrbitControls, Center } from '@react-three/drei';
 import * as THREE from 'three';
@@ -14,6 +14,10 @@ function App() {
   const [meshDepths, setMeshDepths] = useState<Record<number, number>>({});
   const [vertexCount, setVertexCount] = useState<number>(0);
   const [isTracing, setIsTracing] = useState<string | null>(null);
+  const [selectByColor, setSelectByColor] = useState<boolean>(false);
+  const [sealGaps, setSealGaps] = useState<boolean>(true);
+  const [cutOverlaps, setCutOverlaps] = useState<boolean>(false);
+  const [history, setHistory] = useState<Record<number, number>[]>([]);
   
   const sceneRef = useRef<THREE.Group>(null);
 
@@ -22,18 +26,24 @@ function App() {
     if (file) {
       if (file.type === 'image/svg+xml') {
         const url = URL.createObjectURL(file);
-        setSvgUrl(url);
-        setSelectedMeshIndices([]); // Reset on new upload
-        setMeshDepths({});
-        setVertexCount(0); // Reset vertices
+        setIsTracing("Loading SVG Geometry...");
+        
+        // Yield to allow React to paint the loading screen before blocking the thread
+        setTimeout(() => {
+          setSvgUrl(url);
+          setSelectedMeshIndices([]);
+          setMeshDepths({});
+          setVertexCount(0); // Reset vertices
+          setHistory([]); // Reset history
+        }, 50);
       } else if (file.type === 'image/png' || file.type === 'image/jpeg') {
         const url = URL.createObjectURL(file);
-        setIsTracing("Step 1/4: Loading Image...");
+        setIsTracing("Step 1/3: Loading Image...");
         setSvgUrl(null); // Clear canvas
         
         const img = new Image();
         img.onload = () => {
-          setIsTracing("Step 1/4: Optimizing Image Resolution...");
+          setIsTracing("Step 1/3: Optimizing Image Resolution...");
           setTimeout(() => {
             let width = img.width;
             let height = img.height;
@@ -53,7 +63,7 @@ function App() {
               ctx.drawImage(img, 0, 0, width, height);
               const dataUrl = canvas.toDataURL("image/png");
               
-              setIsTracing("Step 2/4: Vectorizing Pixels to SVG...");
+              setIsTracing("Step 2/3: Vectorizing Pixels to SVG...");
               setTimeout(() => {
                 ImageTracer.imageToSVG(
                   dataUrl,
@@ -61,11 +71,12 @@ function App() {
                     const blob = new Blob([svgStr], { type: 'image/svg+xml' });
                     const svgBlobUrl = URL.createObjectURL(blob);
                     
-                    setIsTracing("Step 3/4: Parsing 2D Geometry...");
+                    setIsTracing("Step 3/3: Parsing 2D Geometry...");
                     setSvgUrl(svgBlobUrl);
                     setSelectedMeshIndices([]);
                     setMeshDepths({});
                     setVertexCount(0);
+                    setHistory([]);
                   },
                   {
                     numberofcolors: 8, // Reduced from 16 to keep geometry simpler
@@ -97,7 +108,26 @@ function App() {
     });
   };
 
-
+  const handleUndo = () => {
+    setHistory(prev => {
+      if (prev.length === 0) return prev;
+      const newHistory = [...prev];
+      const previousState = newHistory.pop()!;
+      setMeshDepths(previousState);
+      return newHistory;
+    });
+  };
+  // Keyboard shortcut for Undo (Ctrl+Z / Cmd+Z)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
+        e.preventDefault();
+        handleUndo();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
 
   const handleExport = () => {
     if (!sceneRef.current) return;
@@ -133,27 +163,54 @@ function App() {
       <div className="sidebar">
         <h1 className="sidebar-header">SVG Extruder 3D</h1>
         
-        <div className="control-group">
-          <label htmlFor="svg-upload" style={{ cursor: 'pointer' }}>
+        <div className="control-group" style={{ display: 'flex', gap: '0.5rem' }}>
+          <label htmlFor="image-upload" style={{ flex: 1, cursor: 'pointer' }}>
             <div role="button" className="btn-upload" style={{ 
               backgroundColor: '#3b82f6', 
               color: 'white', 
-              padding: '0.6em 1.2em', 
+              padding: '0.6em 0', 
               borderRadius: '8px',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              gap: '0.5rem',
-              fontWeight: 500
+              gap: '0.4rem',
+              fontWeight: 500,
+              fontSize: '0.85rem'
             }}>
-              <Upload size={18} />
-              Upload Image/SVG
+              <Upload size={16} />
+              Image
+            </div>
+            <input 
+              id="image-upload" 
+              type="file" 
+              accept=".png, .jpg, .jpeg" 
+              onChange={handleFileUpload} 
+              style={{ display: 'none' }}
+            />
+          </label>
+
+          <label htmlFor="svg-upload" style={{ flex: 1, cursor: 'pointer' }}>
+            <div role="button" className="btn-upload" style={{ 
+              backgroundColor: '#10b981', 
+              color: 'white', 
+              padding: '0.6em 0', 
+              borderRadius: '8px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: '0.4rem',
+              fontWeight: 500,
+              fontSize: '0.85rem'
+            }}>
+              <Upload size={16} />
+              SVG
             </div>
             <input 
               id="svg-upload" 
               type="file" 
-              accept=".svg, .png, .jpg, .jpeg" 
+              accept=".svg" 
               onChange={handleFileUpload} 
+              style={{ display: 'none' }}
             />
           </label>
         </div>
@@ -178,9 +235,31 @@ function App() {
         )}
 
         <div className="control-group">
-          <label htmlFor="depth-slider">
-            Extrusion Depth: {currentDepth.toFixed(1)}
-          </label>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+            <label htmlFor="depth-slider" style={{ margin: 0 }}>
+              Extrusion Depth: {currentDepth.toFixed(1)}
+            </label>
+            <button 
+              onClick={handleUndo} 
+              disabled={history.length === 0}
+              style={{ 
+                padding: '0.2rem 0.5rem', 
+                display: 'flex', 
+                alignItems: 'center', 
+                gap: '0.25rem', 
+                fontSize: '0.75rem',
+                backgroundColor: history.length > 0 ? '#3b82f6' : '#334155',
+                color: history.length > 0 ? 'white' : '#94a3b8',
+                border: 'none',
+                borderRadius: '4px',
+                cursor: history.length > 0 ? 'pointer' : 'not-allowed'
+              }}
+              title="Undo depth change (Ctrl+Z)"
+            >
+              <Undo size={12} />
+              Undo
+            </button>
+          </div>
           <input 
             id="depth-slider" 
             type="range" 
@@ -188,9 +267,48 @@ function App() {
             max="20" 
             step="0.1" 
             value={currentDepth}
+            onPointerDown={() => {
+              setHistory(prev => [...prev, meshDepths]);
+            }}
             onChange={handleDepthChange}
             disabled={selectedMeshIndices.length === 0}
           />
+        </div>
+
+        <div className="control-group" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+          <input 
+            id="select-by-color" 
+            type="checkbox" 
+            checked={selectByColor}
+            onChange={(e) => setSelectByColor(e.target.checked)}
+          />
+          <label htmlFor="select-by-color" style={{ cursor: 'pointer' }}>
+            Select matching colors
+          </label>
+        </div>
+
+        <div className="control-group" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '-0.5rem' }}>
+          <input 
+            id="seal-gaps" 
+            type="checkbox" 
+            checked={sealGaps}
+            onChange={(e) => setSealGaps(e.target.checked)}
+          />
+          <label htmlFor="seal-gaps" style={{ cursor: 'pointer' }}>
+            Seal gaps (adds slight bevel)
+          </label>
+        </div>
+
+        <div className="control-group" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '-0.5rem' }}>
+          <input 
+            id="cut-overlaps" 
+            type="checkbox" 
+            checked={cutOverlaps}
+            onChange={(e) => setCutOverlaps(e.target.checked)}
+          />
+          <label htmlFor="cut-overlaps" style={{ cursor: 'pointer' }}>
+            Cut overlaps (puzzle pieces)
+          </label>
         </div>
 
         <div style={{ marginTop: 'auto' }}>
@@ -236,14 +354,22 @@ function App() {
                 <group ref={sceneRef}>
                   <SvgModel 
                     svgUrl={svgUrl} 
+                    selectByColor={selectByColor}
+                    sealGaps={sealGaps}
+                    cutOverlaps={cutOverlaps}
                     selectedMeshIndices={selectedMeshIndices}
                     meshDepths={meshDepths}
-                    onSelect={(index, shiftKey) => {
+                    onSelect={(indices, shiftKey) => {
                       setSelectedMeshIndices(prev => {
                         if (shiftKey) {
-                          return prev.includes(index) ? prev.filter(i => i !== index) : [...prev, index];
+                          const isAdding = !prev.includes(indices[0]);
+                          if (isAdding) {
+                            return [...new Set([...prev, ...indices])];
+                          } else {
+                            return prev.filter(i => !indices.includes(i));
+                          }
                         }
-                        return [index];
+                        return indices;
                       });
                     }}
                     onVerticesCalculated={setVertexCount}
