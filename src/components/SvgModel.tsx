@@ -1,8 +1,10 @@
 import React from 'react';
 import * as THREE from 'three';
 import { SVGLoader } from 'three/examples/jsm/loaders/SVGLoader.js';
+import * as ClipperLib from 'clipper-lib';
+import type { PrintPlate, PrintItem } from '../lib/generic-3mf-exporter';
+import { buildMultiPlate3MF } from '../lib/generic-3mf-exporter';
 import { useLoader } from '@react-three/fiber';
-import ClipperLib from 'clipper-lib';
 
 // --- HELPER TYPES FOR POLYGON CLIPPING ---
 type Pair = [number, number];
@@ -66,22 +68,23 @@ function multiPolygonToShapes(multiPoly: MultiPolygon): THREE.Shape[] {
 
 // --- MAIN COMPONENT ---
 
-interface SvgModelProps {
+export interface SvgModelProps {
   svgUrl: string;
   selectByColor: boolean;
   sealGaps: boolean;
   cutOverlaps: boolean;
   selectedMeshIds: string[];
   meshDepths: Record<string, number>;
-  meshColorOverrides?: Record<string, string>;
+  meshColorOverrides: Record<string, string>;
   onSelect: (ids: string[], shiftKey: boolean) => void;
   onVerticesCalculated?: (count: number) => void;
-  onParseProgress?: (msg: string) => void;
-  onParseComplete?: (meshColors: { id: string, colorHex: string }[]) => void;
+  onParseProgress?: (msg: string | null) => void;
+  onParseComplete?: (extractedColors: { id: string, colorHex: string }[]) => void;
 }
 
 export interface SvgModelRef {
   fuseSelected: (idsToFuse: string[], onProgress: (msg: string) => void) => Promise<string | null>;
+  sliceAndExport: (targetPrintSize: number, buildPlateSize: number, onProgress: (msg: string) => void) => Promise<Blob | null>;
 }
 
 export const SvgModel = React.forwardRef<SvgModelRef, SvgModelProps>(({ 
@@ -179,8 +182,210 @@ export const SvgModel = React.forwardRef<SvgModelRef, SvgModelProps>(({
       });
       
       return newId;
+    },
+    
+    sliceAndExport: async (targetPrintSize: number, buildPlateSize: number, onProgress: (msg: string) => void) => {
+      if (shapesWithColors.length === 0) return null;
+
+      onProgress("Analyzing model dimensions...");
+      await new Promise(r => requestAnimationFrame(() => setTimeout(r, 0)));
+
+      // 1. Calculate raw SVG bounding box
+      let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+      shapesWithColors.forEach(item => {
+        item.shapes.forEach(shape => {
+          const pts = shape.getPoints();
+          pts.forEach(p => {
+            if (p.x < minX) minX = p.x;
+            if (p.x > maxX) maxX = p.x;
+            if (p.y < minY) minY = p.y;
+            if (p.y > maxY) maxY = p.y;
+          });
+        });
+      });
+
+      const rawWidth = maxX - minX;
+      const rawHeight = maxY - minY;
+      
+      // The model is scaled by 0.1 natively
+      const currentPhysicalMaxDim = Math.max(rawWidth, rawHeight) * 0.1;
+      const scaleFactor = targetPrintSize / currentPhysicalMaxDim;
+      
+      const finalPhysicalWidth = rawWidth * 0.1 * scaleFactor;
+      const finalPhysicalHeight = rawHeight * 0.1 * scaleFactor;
+      
+      const cols = Math.ceil(finalPhysicalWidth / buildPlateSize);
+      const rows = Math.ceil(finalPhysicalHeight / buildPlateSize);
+      
+      // Size of each grid cell in raw SVG space
+      const cellSvgSize = buildPlateSize / (0.1 * scaleFactor);
+
+      const plates: PrintPlate[] = [];
+      const clipperScale = 10000;
+
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          onProgress(`Slicing quadrant ${r * cols + c + 1} of ${rows * cols}...`);
+          await new Promise(res => requestAnimationFrame(() => setTimeout(res, 0)));
+
+          const rectMinX = minX + c * cellSvgSize;
+          const rectMaxX = minX + (c + 1) * cellSvgSize;
+          const rectMinY = minY + r * cellSvgSize;
+          const rectMaxY = minY + (r + 1) * cellSvgSize;
+
+          const clipPath = [
+            { X: Math.round(rectMinX * clipperScale), Y: Math.round(rectMinY * clipperScale) },
+            { X: Math.round(rectMaxX * clipperScale), Y: Math.round(rectMinY * clipperScale) },
+            { X: Math.round(rectMaxX * clipperScale), Y: Math.round(rectMaxY * clipperScale) },
+            { X: Math.round(rectMinX * clipperScale), Y: Math.round(rectMaxY * clipperScale) }
+          ];
+          
+          ClipperLib.Clipper.Orientation(clipPath);
+
+          const itemsForPlate: PrintItem[] = [];
+
+          shapesWithColors.forEach(item => {
+            const clipper = new ClipperLib.Clipper();
+            // @ts-ignore
+            clipper.AddPath(clipPath, ClipperLib.PolyType.ptClip, true);
+
+            item.shapes.forEach(shape => {
+              const polygon = shapeToPolygon(shape);
+              for (let i = 0; i < polygon.length; i++) {
+                const ring = polygon[i];
+                if (ring.length < 3) continue;
+                const path = ring.map(p => ({ X: Math.round(p[0] * clipperScale), Y: Math.round(p[1] * clipperScale) }));
+                const isOuter = (i === 0);
+                const orient = ClipperLib.Clipper.Orientation(path);
+                if (isOuter !== orient) path.reverse();
+                // @ts-ignore
+                clipper.AddPath(path, ClipperLib.PolyType.ptSubject, true);
+              }
+            });
+
+            // @ts-ignore
+            const solutionTree = new ClipperLib.PolyTree();
+            // @ts-ignore
+            clipper.Execute(ClipperLib.ClipType.ctIntersection, solutionTree, ClipperLib.PolyFillType.pftNonZero, ClipperLib.PolyFillType.pftNonZero);
+
+            const resultMultiPoly: MultiPolygon = [];
+            const parsePolyNode = (node: any, multiPoly: MultiPolygon) => {
+              if (!node.IsHole()) {
+                const ring: Ring = node.Contour().map((p: any) => [p.X / clipperScale, p.Y / clipperScale]);
+                if (ring.length > 0 && (ring[0][0] !== ring[ring.length - 1][0] || ring[0][1] !== ring[ring.length - 1][1])) ring.push([...ring[0]]);
+                if (ring.length >= 4) {
+                  const poly = [ring];
+                  node.Childs().forEach((child: any) => {
+                    const holeRing: Ring = child.Contour().map((p: any) => [p.X / clipperScale, p.Y / clipperScale]);
+                    if (holeRing.length > 0 && (holeRing[0][0] !== holeRing[holeRing.length - 1][0] || holeRing[0][1] !== holeRing[holeRing.length - 1][1])) holeRing.push([...holeRing[0]]);
+                    if (holeRing.length >= 4) poly.push(holeRing);
+                    child.Childs().forEach((nestedNode: any) => parsePolyNode(nestedNode, multiPoly));
+                  });
+                  multiPoly.push(poly);
+                }
+              }
+            };
+
+            // @ts-ignore
+            solutionTree.Childs().forEach((child: any) => parsePolyNode(child, resultMultiPoly));
+            const clippedShapes = multiPolygonToShapes(resultMultiPoly);
+
+            if (clippedShapes.length > 0) {
+              const depth = meshDepths[item.id] ?? 0;
+              let geom: THREE.BufferGeometry;
+              if (depth === 0) {
+                geom = new THREE.ShapeGeometry(clippedShapes);
+              } else {
+                geom = new THREE.ExtrudeGeometry(clippedShapes, {
+                  depth,
+                  bevelEnabled: sealGaps,
+                  bevelSize: sealGaps ? 0.2 : 0,
+                  bevelThickness: sealGaps ? 0.05 : 0,
+                  bevelSegments: sealGaps ? 1 : 0
+                });
+              }
+
+              if (geom.index) {
+                geom = geom.toNonIndexed();
+              }
+              geom.deleteAttribute('normal');
+              geom.deleteAttribute('uv');
+
+              const matrix = new THREE.Matrix4().makeScale(
+                0.1 * scaleFactor, 
+                -0.1 * scaleFactor, 
+                0.1
+              );
+              geom.applyMatrix4(matrix);
+
+              const overriddenHex = meshColorOverrides[item.id];
+              const hex = overriddenHex ?? item.colorHex;
+
+              itemsForPlate.push({
+                geometry: geom,
+                colorHex: `#${hex}`,
+                name: `Part_${item.id}`
+              });
+            }
+          });
+
+          if (itemsForPlate.length > 0) {
+            // Group and merge geometries by colorHex to produce single meshes per color
+            const colorGroups: Record<string, THREE.BufferGeometry[]> = {};
+            itemsForPlate.forEach(item => {
+              const hex = item.colorHex || "#CCCCCC";
+              if (!colorGroups[hex]) colorGroups[hex] = [];
+              colorGroups[hex].push(item.geometry);
+            });
+
+            const mergedItems: PrintItem[] = [];
+            Object.entries(colorGroups).forEach(([hex, geoms]) => {
+              if (geoms.length === 1) {
+                mergedItems.push({ geometry: geoms[0], colorHex: hex, name: `ColorGroup_${hex}` });
+              } else {
+                try {
+                  // Robust position-only manual merge for 3MF!
+                  let totalPositions = 0;
+                  geoms.forEach(g => {
+                    totalPositions += g.getAttribute('position').count;
+                  });
+                  
+                  const mergedPos = new Float32Array(totalPositions * 3);
+                  let offset = 0;
+                  geoms.forEach(g => {
+                    const pos = g.getAttribute('position');
+                    mergedPos.set(pos.array, offset);
+                    offset += pos.array.length;
+                  });
+                  
+                  const mergedGeo = new THREE.BufferGeometry();
+                  mergedGeo.setAttribute('position', new THREE.BufferAttribute(mergedPos, 3));
+                  mergedItems.push({ geometry: mergedGeo, colorHex: hex, name: `ColorGroup_${hex}` });
+                } catch (err) {
+                  console.error("Failed to merge geometries for color", hex, err);
+                  // Fallback to unmerged
+                  geoms.forEach((g, idx) => mergedItems.push({ geometry: g, colorHex: hex, name: `ColorGroup_${hex}_${idx}` }));
+                }
+              }
+            });
+
+            plates.push({
+              name: `Plate_R${r + 1}_C${c + 1}`,
+              items: mergedItems
+            });
+          }
+        }
+      }
+
+      onProgress("Assembling 3MF archive...");
+      await new Promise(r => requestAnimationFrame(() => setTimeout(r, 0)));
+
+      if (plates.length > 0) {
+        return await buildMultiPlate3MF(plates);
+      }
+      return null;
     }
-  }), [shapesWithColors]);
+  }), [shapesWithColors, meshDepths, meshColorOverrides, sealGaps]);
 
   React.useEffect(() => {
     if (shapesWithColors.length > 0 && onParseComplete) {

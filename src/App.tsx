@@ -26,6 +26,10 @@ function App() {
   const [mergeMatching, setMergeMatching] = useState(true);
   const [fuseStatus, setFuseStatus] = useState<string | null>(null);
   
+  const [targetPrintSize, setTargetPrintSize] = useState<number>(200);
+  const [buildPlateSize, setBuildPlateSize] = useState<number>(256);
+  const [exportStatus, setExportStatus] = useState<string | null>(null);
+
   const sceneRef = useRef<THREE.Group>(null);
   const svgModelRef = useRef<SvgModelRef>(null);
 
@@ -143,6 +147,36 @@ function App() {
     }
     
     setFuseStatus(null);
+  };
+
+  const handleExport3MF = async () => {
+    if (!svgModelRef.current) return;
+    
+    try {
+      const blob = await svgModelRef.current.sliceAndExport(
+        targetPrintSize,
+        buildPlateSize,
+        setExportStatus
+      );
+      
+      if (blob) {
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.style.display = 'none';
+        link.href = url;
+        link.download = 'extruded_model.3mf';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+      } else {
+        alert("Nothing to export.");
+      }
+    } catch (e) {
+      console.error("Export 3MF failed", e);
+      alert("Failed to export 3MF");
+    } finally {
+      setExportStatus(null);
+    }
   };
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -301,6 +335,19 @@ function App() {
           // ExtrudeGeometry is indexed, ShapeGeometry (depth=0) is non-indexed. Force all to be non-indexed!
           if (geom.index) {
             geom = geom.toNonIndexed();
+          }
+          
+          // Normalize attributes to prevent merge failures
+          const attrs = Object.keys(geom.attributes);
+          attrs.forEach(key => {
+            if (key !== 'position' && key !== 'normal' && key !== 'uv') {
+              geom.deleteAttribute(key);
+            }
+          });
+          if (!geom.attributes.normal) geom.computeVertexNormals();
+          if (!geom.attributes.uv) {
+             const count = geom.attributes.position.count;
+             geom.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(count * 2), 2));
           }
           
           geom.applyMatrix4(mesh.matrix);
@@ -652,30 +699,61 @@ function App() {
 
         <div style={{ marginTop: 'auto' }}>
           <div className="control-group">
-            <label className="checkbox-label" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}>
+            <h3 style={{ fontSize: '0.85rem', marginBottom: '0.5rem', color: '#94a3b8' }}>3D PRINT SETTINGS</h3>
+            <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.5rem' }}>
+              <div style={{ flex: 1 }}>
+                <label className="checkbox-label" style={{ fontSize: '0.75rem' }}>Target Size (mm)</label>
+                <input 
+                  type="number" 
+                  value={targetPrintSize} 
+                  onChange={(e) => setTargetPrintSize(Number(e.target.value))}
+                  style={{ width: '100%' }}
+                />
+              </div>
+              <div style={{ flex: 1 }}>
+                <label className="checkbox-label" style={{ fontSize: '0.75rem' }}>Plate Size (mm)</label>
+                <input 
+                  type="number" 
+                  value={buildPlateSize} 
+                  onChange={(e) => setBuildPlateSize(Number(e.target.value))}
+                  style={{ width: '100%' }}
+                />
+              </div>
+            </div>
+            
+            <button 
+              disabled={!svgUrl || !!exportStatus} 
+              style={{ width: '100%', marginBottom: '0.5rem', backgroundColor: '#ec4899' }}
+              onClick={handleExport3MF}
+            >
+              <Download size={18} />
+              Export 3MF (Multi-Plate)
+            </button>
+            
+            <label className="checkbox-label" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', marginBottom: '0.5rem' }}>
               <input 
                 type="checkbox" 
                 checked={mergeBeforeExport} 
                 onChange={(e) => setMergeBeforeExport(e.target.checked)}
               />
-              Join objects for export (Single Mesh)
+              Join objects for GLTF (Single Mesh)
             </label>
-          </div>
 
-          <button 
-            disabled={!svgUrl} 
-            style={{ width: '100%' }}
-            onClick={handleExport}
-          >
-            <Download size={18} />
-            Export GLTF
-          </button>
+            <button 
+              disabled={!svgUrl} 
+              style={{ width: '100%', backgroundColor: '#475569' }}
+              onClick={handleExport}
+            >
+              <Download size={18} />
+              Export GLTF (Raw)
+            </button>
+          </div>
         </div>
       </div>
 
       <div className="main-content" style={{ position: 'relative' }}>
         {/* Loading Overlay */}
-        {(isTracing || fuseStatus) && (
+        {(isTracing || fuseStatus || exportStatus) && (
           <div style={{
             position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
             backgroundColor: 'rgba(15, 23, 42, 0.8)', zIndex: 10,
@@ -686,8 +764,8 @@ function App() {
               borderTop: '4px solid #3b82f6', borderRadius: '50%',
               animation: 'spin 1s linear infinite', marginBottom: '1rem'
             }} />
-            <div style={{ color: '#f8fafc', fontSize: '1.2rem', fontWeight: 'bold' }}>
-              {fuseStatus || isTracing}
+            <div style={{ color: '#f8fafc', fontSize: '1.2rem', fontWeight: 'bold', textAlign: 'center' }}>
+              {exportStatus || fuseStatus || isTracing}
             </div>
             <style>{`@keyframes spin { 100% { transform: rotate(360deg); } }`}</style>
           </div>
