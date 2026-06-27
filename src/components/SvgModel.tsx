@@ -71,22 +71,122 @@ interface SvgModelProps {
   selectByColor: boolean;
   sealGaps: boolean;
   cutOverlaps: boolean;
-  selectedMeshIndices: number[];
-  meshDepths: Record<number, number>;
-  meshColorOverrides?: Record<number, string>;
-  onSelect: (indices: number[], shiftKey: boolean) => void;
+  selectedMeshIds: string[];
+  meshDepths: Record<string, number>;
+  meshColorOverrides?: Record<string, string>;
+  onSelect: (ids: string[], shiftKey: boolean) => void;
   onVerticesCalculated?: (count: number) => void;
   onParseProgress?: (msg: string) => void;
-  onParseComplete?: (meshColors: { index: number, colorHex: string }[]) => void;
+  onParseComplete?: (meshColors: { id: string, colorHex: string }[]) => void;
 }
 
-export const SvgModel: React.FC<SvgModelProps> = ({ 
-  svgUrl, selectByColor, sealGaps, cutOverlaps, selectedMeshIndices, meshDepths, meshColorOverrides = {}, onSelect, onVerticesCalculated, onParseProgress, onParseComplete 
-}) => {
+export interface SvgModelRef {
+  fuseSelected: (idsToFuse: string[], onProgress: (msg: string) => void) => Promise<string | null>;
+}
+
+export const SvgModel = React.forwardRef<SvgModelRef, SvgModelProps>(({ 
+  svgUrl, selectByColor, sealGaps, cutOverlaps, selectedMeshIds, meshDepths, meshColorOverrides = {}, onSelect, onVerticesCalculated, onParseProgress, onParseComplete 
+}, ref) => {
   const svgData = useLoader(SVGLoader, svgUrl);
   const groupRef = React.useRef<THREE.Group>(null);
   
-  const [shapesWithColors, setShapesWithColors] = React.useState<{ color: THREE.Color; colorHex: string; shapes: THREE.Shape[] }[]>([]);
+  const [shapesWithColors, setShapesWithColors] = React.useState<{ id: string; color: THREE.Color; colorHex: string; shapes: THREE.Shape[] }[]>([]);
+
+  React.useImperativeHandle(ref, () => ({
+    fuseSelected: async (idsToFuse: string[], onProgress: (msg: string) => void) => {
+      const itemsToFuse = shapesWithColors.filter(item => idsToFuse.includes(item.id) && item.shapes.length > 0);
+      if (itemsToFuse.length === 0) return null;
+
+      onProgress("Extracting geometry...");
+      await new Promise(r => requestAnimationFrame(() => setTimeout(r, 0)));
+
+      const scale = 10000;
+      const clipper = new ClipperLib.Clipper();
+      
+      itemsToFuse.forEach(item => {
+        item.shapes.forEach(shape => {
+          const polygon = shapeToPolygon(shape);
+          for (let i = 0; i < polygon.length; i++) {
+            const ring = polygon[i];
+            if (ring.length < 3) continue;
+            const clipperPath = ring.map(p => ({ X: Math.round(p[0] * scale), Y: Math.round(p[1] * scale) }));
+            
+            const isOuter = (i === 0);
+            const orient = ClipperLib.Clipper.Orientation(clipperPath);
+            if (isOuter !== orient) {
+              clipperPath.reverse();
+            }
+            // @ts-ignore
+            clipper.AddPath(clipperPath, ClipperLib.PolyType.ptSubject, true);
+          }
+        });
+      });
+
+      onProgress("Mathematically fusing shapes...");
+      await new Promise(r => requestAnimationFrame(() => setTimeout(r, 0)));
+
+      // @ts-ignore
+      const solutionTree = new ClipperLib.PolyTree();
+      // @ts-ignore
+      clipper.Execute(ClipperLib.ClipType.ctUnion, solutionTree, ClipperLib.PolyFillType.pftNonZero, ClipperLib.PolyFillType.pftNonZero);
+
+      onProgress("Rebuilding 3D meshes...");
+      await new Promise(r => requestAnimationFrame(() => setTimeout(r, 0)));
+
+      const resultMultiPoly: MultiPolygon = [];
+      const parsePolyNode = (node: any, multiPoly: MultiPolygon) => {
+        if (!node.IsHole()) {
+          const ring: Ring = node.Contour().map((p: any) => [p.X / scale, p.Y / scale]);
+          if (ring.length > 0 && (ring[0][0] !== ring[ring.length - 1][0] || ring[0][1] !== ring[ring.length - 1][1])) ring.push([...ring[0]]);
+          
+          if (ring.length >= 4) {
+            const poly = [ring];
+            node.Childs().forEach((child: any) => {
+              const holeRing: Ring = child.Contour().map((p: any) => [p.X / scale, p.Y / scale]);
+              if (holeRing.length > 0 && (holeRing[0][0] !== holeRing[holeRing.length - 1][0] || holeRing[0][1] !== holeRing[holeRing.length - 1][1])) holeRing.push([...holeRing[0]]);
+              if (holeRing.length >= 4) poly.push(holeRing);
+              
+              child.Childs().forEach((nestedNode: any) => parsePolyNode(nestedNode, multiPoly));
+            });
+            multiPoly.push(poly);
+          }
+        }
+      };
+      
+      // @ts-ignore
+      solutionTree.Childs().forEach((child: any) => parsePolyNode(child, resultMultiPoly));
+      const fusedShapes = multiPolygonToShapes(resultMultiPoly);
+
+      const newId = `fused_${Date.now()}_${Math.random().toString(36).substring(2,9)}`;
+
+      setShapesWithColors(prev => {
+        const next = [...prev];
+        itemsToFuse.forEach(item => {
+          const itemIdx = next.findIndex(n => n.id === item.id);
+          if (itemIdx !== -1) {
+            next[itemIdx] = { ...next[itemIdx], shapes: [] };
+          }
+        });
+
+        next.push({
+          id: newId,
+          color: itemsToFuse[0].color,
+          colorHex: itemsToFuse[0].colorHex,
+          shapes: fusedShapes
+        });
+        
+        return next;
+      });
+      
+      return newId;
+    }
+  }), [shapesWithColors]);
+
+  React.useEffect(() => {
+    if (shapesWithColors.length > 0 && onParseComplete) {
+      onParseComplete(shapesWithColors.map(s => ({ id: s.id, colorHex: s.colorHex })));
+    }
+  }, [shapesWithColors]);
 
   React.useEffect(() => {
     if (!svgData) return;
@@ -282,22 +382,23 @@ export const SvgModel: React.FC<SvgModelProps> = ({
         svgData.paths = newSvgDataPaths;
 
         const finalizePolygons = (finalPolys: MultiPolygon[]) => {
-          const individualShapes: { color: THREE.Color, colorHex: string, shapes: THREE.Shape[] }[] = [];
+          const individualShapes: { id: string, color: THREE.Color, colorHex: string, shapes: THREE.Shape[] }[] = [];
           
           finalPolys.forEach((multiPoly, index) => {
             if (multiPoly.length === 0) return;
             const color = svgData.paths[index].color;
             const colorHex = color.getHexString();
             const shapes = multiPolygonToShapes(multiPoly);
-            shapes.forEach(shape => {
-              individualShapes.push({ color, colorHex, shapes: [shape] });
-            });
+            individualShapes.push({ id: `shape_${index}`, color, colorHex, shapes });
           });
           
-          const validGroups = individualShapes.filter(g => g.shapes.length > 0);
-          setShapesWithColors(validGroups);
+          setShapesWithColors(individualShapes);
+          
           if (onParseComplete) {
-            onParseComplete(validGroups.map((g, i) => ({ index: i, colorHex: g.colorHex })));
+            onParseComplete(individualShapes.map(item => ({
+              id: item.id,
+              colorHex: item.colorHex
+            })));
           }
         };
 
@@ -388,15 +489,17 @@ export const SvgModel: React.FC<SvgModelProps> = ({
   return (
     <group ref={groupRef} scale={[0.1, -0.1, 0.1]} position={[-5, 5, 0]}>
       {shapesWithColors.map((item, index) => {
-        const isSelected = selectedMeshIndices.includes(index);
+        if (!item.shapes || item.shapes.length === 0) return null;
+
+        const isSelected = selectedMeshIds.includes(item.id);
         
         // Apply color overrides if they exist
-        const overriddenHex = meshColorOverrides[index];
+        const overriddenHex = meshColorOverrides[item.id];
         const baseColorHex = overriddenHex ?? item.colorHex;
         const baseColor = overriddenHex ? new THREE.Color(`#${overriddenHex}`) : item.color;
         
         const color = isSelected ? "hotpink" : baseColor;
-        const depth = meshDepths[index] ?? 0;
+        const depth = meshDepths[item.id] ?? 0;
 
         // Base offset to prevent z-fighting (still slightly useful even after boolean subtraction due to precision issues)
         const baseZOffset = index * 0.001;
@@ -408,18 +511,15 @@ export const SvgModel: React.FC<SvgModelProps> = ({
 
         return (
           <mesh 
-            key={index} 
+            key={item.id} 
             position={[0, 0, zPosition]}
             userData={{ originalColorHex: baseColorHex, originalZPosition: baseZOffset }}
             onClick={(e) => {
               e.stopPropagation();
-              const indices = selectByColor 
-                ? shapesWithColors.map((it, i) => {
-                    const currentHex = meshColorOverrides[i] ?? it.colorHex;
-                    return currentHex === baseColorHex ? i : -1;
-                  }).filter(i => i !== -1)
-                : [index];
-              onSelect(indices, e.shiftKey);
+              const ids = selectByColor 
+                ? shapesWithColors.filter(it => (meshColorOverrides[it.id] ?? it.colorHex) === baseColorHex).map(it => it.id)
+                : [item.id];
+              onSelect(ids, e.shiftKey);
             }}
           >
             {depth === 0 ? (
@@ -446,4 +546,4 @@ export const SvgModel: React.FC<SvgModelProps> = ({
       })}
     </group>
   );
-};
+});

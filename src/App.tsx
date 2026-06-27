@@ -6,29 +6,32 @@ import * as THREE from 'three';
 import * as BufferGeometryUtils from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js';
 import ImageTracer from 'imagetracerjs';
-import { SvgModel } from './components/SvgModel';
+import { SvgModel, type SvgModelRef } from './components/SvgModel';
 import './index.css';
 
 function App() {
   const [svgUrl, setSvgUrl] = useState<string | null>(null);
-  const [selectedMeshIndices, setSelectedMeshIndices] = useState<number[]>([]);
-  const [meshDepths, setMeshDepths] = useState<Record<number, number>>({});
+  const [selectedMeshIds, setSelectedMeshIds] = useState<string[]>([]);
+  const [meshDepths, setMeshDepths] = useState<Record<string, number>>({});
   const [vertexCount, setVertexCount] = useState<number>(0);
   const [isTracing, setIsTracing] = useState<string | null>(null);
   const [selectByColor, setSelectByColor] = useState<boolean>(false);
   const [sealGaps, setSealGaps] = useState<boolean>(true);
   const [cutOverlaps, setCutOverlaps] = useState<boolean>(true);
   const [mergeBeforeExport, setMergeBeforeExport] = useState<boolean>(true);
-  const [history, setHistory] = useState<Record<number, number>[]>([]);
-  const [meshColors, setMeshColors] = useState<{ index: number, colorHex: string }[]>([]);
-  const [meshColorOverrides, setMeshColorOverrides] = useState<Record<number, string>>({});
+  const [history, setHistory] = useState<Record<string, number>[]>([]);
+  const [meshColors, setMeshColors] = useState<{ id: string, colorHex: string }[]>([]);
+  const [meshColorOverrides, setMeshColorOverrides] = useState<Record<string, string>>({});
   const [isMerging, setIsMerging] = useState(false);
+  const [mergeMatching, setMergeMatching] = useState(true);
+  const [fuseStatus, setFuseStatus] = useState<string | null>(null);
   
   const sceneRef = useRef<THREE.Group>(null);
+  const svgModelRef = useRef<SvgModelRef>(null);
 
   const currentMeshColors = meshColors.map(m => ({
-    index: m.index,
-    colorHex: meshColorOverrides[m.index] || m.colorHex
+    id: m.id,
+    colorHex: meshColorOverrides[m.id] || m.colorHex
   }));
 
   const getLuminance = (hex: string) => {
@@ -43,34 +46,103 @@ function App() {
     .sort((a, b) => getLuminance(b) - getLuminance(a)); // Lightest to darkest
 
   const toggleColorSelection = (colorHex: string) => {
-    const indicesOfColor = currentMeshColors.filter(m => m.colorHex === colorHex).map(m => m.index);
+    const idsOfColor = currentMeshColors.filter(m => m.colorHex === colorHex).map(m => m.id);
     
     // Check if all of these are already selected
-    const allSelected = indicesOfColor.every(idx => selectedMeshIndices.includes(idx));
+    const allSelected = idsOfColor.every(id => selectedMeshIds.includes(id));
     
     if (allSelected) {
       // Unselect them
-      setSelectedMeshIndices(prev => prev.filter(idx => !indicesOfColor.includes(idx)));
+      setSelectedMeshIds(prev => prev.filter(id => !idsOfColor.includes(id)));
     } else {
       // Select them (append to existing selection)
-      setSelectedMeshIndices(prev => [...new Set([...prev, ...indicesOfColor])]);
+      setSelectedMeshIds(prev => [...new Set([...prev, ...idsOfColor])]);
     }
   };
 
+  const removeColorFromSelection = (colorHex: string) => {
+    const idsOfColor = currentMeshColors.filter(m => m.colorHex === colorHex).map(m => m.id);
+    setSelectedMeshIds(prev => prev.filter(id => !idsOfColor.includes(id)));
+  };
+
   const selectedUniqueColors = Array.from(new Set(
-    selectedMeshIndices.map(idx => currentMeshColors.find(m => m.index === idx)?.colorHex).filter(Boolean) as string[]
+    selectedMeshIds.map(id => currentMeshColors.find(m => m.id === id)?.colorHex).filter(Boolean) as string[]
   ));
 
+  const getColorDistance = (hex1: string, hex2: string) => {
+    const r1 = (parseInt(hex1, 16) >> 16) & 0xff;
+    const g1 = (parseInt(hex1, 16) >> 8) & 0xff;
+    const b1 = (parseInt(hex1, 16) >> 0) & 0xff;
+    
+    const r2 = (parseInt(hex2, 16) >> 16) & 0xff;
+    const g2 = (parseInt(hex2, 16) >> 8) & 0xff;
+    const b2 = (parseInt(hex2, 16) >> 0) & 0xff;
+    
+    return (r1-r2)*(r1-r2) + (g1-g2)*(g1-g2) + (b1-b2)*(b1-b2);
+  };
+
+  const handleAutoSelectSimilar = () => {
+    if (selectedUniqueColors.length !== 1) return;
+    const baseColor = selectedUniqueColors[0];
+    const threshold = 2500; // About ~50 value diff per channel
+    
+    const similarColors = uniqueColors.filter(c => getColorDistance(baseColor, c) < threshold);
+    
+    const idsToSelect = currentMeshColors
+      .filter(m => similarColors.includes(m.colorHex))
+      .map(m => m.id);
+    
+    setSelectedMeshIds(prev => [...new Set([...prev, ...idsToSelect])]);
+  };
+
   const handleMergeColors = (targetColorHex: string) => {
+    let idsToUpdate = selectedMeshIds;
+
+    if (mergeMatching) {
+      // Find all unique colors represented in the current selection
+      const colorsToMerge = Array.from(new Set(
+        selectedMeshIds.map(id => currentMeshColors.find(m => m.id === id)?.colorHex).filter(Boolean) as string[]
+      ));
+
+      // Find ALL meshes in the entire model that share those colors
+      idsToUpdate = currentMeshColors
+        .filter(m => colorsToMerge.includes(m.colorHex))
+        .map(m => m.id);
+    }
+
     setMeshColorOverrides(prev => {
       const next = { ...prev };
-      selectedMeshIndices.forEach(idx => {
-        next[idx] = targetColorHex;
+      idsToUpdate.forEach(id => {
+        next[id] = targetColorHex;
       });
       return next;
     });
+    
     setIsMerging(false);
-    setSelectedMeshIndices([]);
+    setSelectedMeshIds([]);
+  };
+
+  const handleFuseParts = async () => {
+    if (!svgModelRef.current) return;
+    
+    setFuseStatus("Initializing fusion...");
+    await new Promise(r => requestAnimationFrame(() => setTimeout(r, 0)));
+    
+    const newId = await svgModelRef.current.fuseSelected(selectedMeshIds, (msg) => {
+      setFuseStatus(msg);
+    });
+    
+    if (newId) {
+      // Apply the color override of the first selected part to the new fused part
+      setMeshColorOverrides(prev => {
+        const next = { ...prev };
+        next[newId] = currentMeshColors.find(m => m.id === selectedMeshIds[0])?.colorHex || "000000";
+        return next;
+      });
+      setSelectedMeshIds([newId]);
+    }
+    
+    setFuseStatus(null);
   };
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -83,7 +155,7 @@ function App() {
         // Yield to allow React to paint the loading screen before blocking the thread
         setTimeout(() => {
           setSvgUrl(url);
-          setSelectedMeshIndices([]);
+          setSelectedMeshIds([]);
           setMeshDepths({});
           setVertexCount(0); // Reset vertices
           setHistory([]); // Reset history
@@ -128,7 +200,7 @@ function App() {
                     
                     setIsTracing("Step 3/3: Parsing 2D Geometry...");
                     setSvgUrl(svgBlobUrl);
-                    setSelectedMeshIndices([]);
+                    setSelectedMeshIds([]);
                     setMeshDepths({});
                     setVertexCount(0);
                     setHistory([]);
@@ -159,8 +231,8 @@ function App() {
     const depth = parseFloat(e.target.value);
     setMeshDepths(prev => {
       const newDepths = { ...prev };
-      selectedMeshIndices.forEach(index => {
-        newDepths[index] = depth;
+      selectedMeshIds.forEach(id => {
+        newDepths[id] = depth;
       });
       return newDepths;
     });
@@ -279,8 +351,8 @@ function App() {
   };
 
   // Calculate current average depth of selected meshes to display on the slider
-  const currentDepth = selectedMeshIndices.length > 0 
-    ? selectedMeshIndices.reduce((sum, idx) => sum + (meshDepths[idx] ?? 0), 0) / selectedMeshIndices.length 
+  const currentDepth = selectedMeshIds.length > 0 
+    ? selectedMeshIds.reduce((sum, id) => sum + (meshDepths[id] ?? 0), 0) / selectedMeshIds.length 
     : 0;
 
   return (
@@ -396,7 +468,7 @@ function App() {
               setHistory(prev => [...prev, meshDepths]);
             }}
             onChange={handleDepthChange}
-            disabled={selectedMeshIndices.length === 0}
+            disabled={selectedMeshIds.length === 0}
           />
         </div>
 
@@ -447,9 +519,9 @@ function App() {
               paddingRight: '4px', resize: 'vertical', border: '1px solid #1e293b'
             }}>
               {uniqueColors.map(colorHex => {
-                const indicesOfColor = currentMeshColors.filter(m => m.colorHex === colorHex).map(m => m.index);
-                const isAllSelected = indicesOfColor.length > 0 && indicesOfColor.every(idx => selectedMeshIndices.includes(idx));
-                const isPartiallySelected = !isAllSelected && indicesOfColor.some(idx => selectedMeshIndices.includes(idx));
+                const idsOfColor = currentMeshColors.filter(m => m.colorHex === colorHex).map(m => m.id);
+                const isAllSelected = idsOfColor.length > 0 && idsOfColor.every(id => selectedMeshIds.includes(id));
+                const isPartiallySelected = !isAllSelected && idsOfColor.some(id => selectedMeshIds.includes(id));
                 
                 return (
                   <div
@@ -493,31 +565,80 @@ function App() {
               })}
             </div>
 
+            {selectedUniqueColors.length === 1 && !isMerging && (
+              <button 
+                onClick={handleAutoSelectSimilar}
+                style={{ marginTop: '0.5rem', fontSize: '0.8rem', padding: '0.4rem', backgroundColor: '#10b981' }}
+              >
+                Auto-Select Similar
+              </button>
+            )}
+
             {selectedUniqueColors.length > 1 && !isMerging && (
               <button 
                 onClick={() => setIsMerging(true)}
-                style={{ marginTop: '0.5rem', fontSize: '0.8rem', padding: '0.4rem', backgroundColor: '#8b5cf6' }}
+                style={{ marginTop: '0.5rem', fontSize: '0.8rem', padding: '0.4rem', backgroundColor: '#8b5cf6', width: '100%' }}
               >
                 Merge Selected Colors
+              </button>
+            )}
+
+            {selectedMeshIds.length > 1 && !isMerging && (
+              <button 
+                onClick={handleFuseParts}
+                style={{ marginTop: '0.5rem', fontSize: '0.8rem', padding: '0.4rem', backgroundColor: '#f97316', width: '100%' }}
+                title="Mathematically fuse touching parts into a single seamless polygon"
+              >
+                Fuse Touching Parts
               </button>
             )}
 
             {isMerging && (
               <div style={{ marginTop: '0.5rem', backgroundColor: '#334155', padding: '0.5rem', borderRadius: '4px' }}>
                 <div style={{ fontSize: '0.75rem', marginBottom: '0.5rem', color: '#cbd5e1' }}>Select target color:</div>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.75rem', padding: '0.25rem 0' }}>
                   {selectedUniqueColors.map(colorHex => (
-                    <div
-                      key={`target-${colorHex}`}
-                      onClick={() => handleMergeColors(colorHex)}
-                      style={{
-                        width: '24px', height: '24px', backgroundColor: `#${colorHex}`,
-                        borderRadius: '4px', cursor: 'pointer', border: '1px solid #1e293b'
-                      }}
-                      title={`Merge into #${colorHex}`}
-                    />
+                    <div key={`target-${colorHex}`} style={{ position: 'relative' }}>
+                      <div 
+                        onClick={() => handleMergeColors(colorHex)}
+                        style={{
+                          width: '32px', height: '32px', backgroundColor: `#${colorHex}`,
+                          borderRadius: '50%', cursor: 'pointer', border: '2px solid #475569',
+                          boxShadow: '0 2px 4px rgba(0,0,0,0.2)', transition: 'transform 0.1s'
+                        }}
+                        onMouseEnter={(e) => e.currentTarget.style.transform = 'scale(1.1)'}
+                        onMouseLeave={(e) => e.currentTarget.style.transform = 'scale(1)'}
+                        title={`Merge into #${colorHex}`}
+                      />
+                      <div 
+                        onClick={(e) => { e.stopPropagation(); removeColorFromSelection(colorHex); }}
+                        style={{
+                          position: 'absolute', top: '-4px', right: '-4px',
+                          width: '16px', height: '16px', backgroundColor: '#ef4444',
+                          color: 'white', borderRadius: '50%', display: 'flex',
+                          alignItems: 'center', justifyContent: 'center', fontSize: '10px',
+                          fontWeight: 'bold', cursor: 'pointer', border: '1px solid #1e293b',
+                          boxShadow: '0 1px 2px rgba(0,0,0,0.3)'
+                        }}
+                        title="Remove color from selection"
+                      >
+                        ✕
+                      </div>
+                    </div>
                   ))}
                 </div>
+
+                <div style={{ marginTop: '0.5rem', marginBottom: '0.5rem' }}>
+                  <label className="checkbox-label" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', fontSize: '0.75rem', color: '#94a3b8' }}>
+                    <input 
+                      type="checkbox" 
+                      checked={mergeMatching} 
+                      onChange={(e) => setMergeMatching(e.target.checked)}
+                    />
+                    Also merge unselected parts of these colors
+                  </label>
+                </div>
+
                 <button 
                   onClick={() => setIsMerging(false)}
                   style={{ marginTop: '0.5rem', fontSize: '0.7rem', padding: '0.2rem 0.5rem', backgroundColor: 'transparent', border: '1px solid #64748b' }}
@@ -553,21 +674,26 @@ function App() {
       </div>
 
       <div className="main-content" style={{ position: 'relative' }}>
-        {isTracing && (
-          <div className="empty-state" style={{ 
-            position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, zIndex: 10,
-            display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '1rem',
-            backgroundColor: '#0f172a'
+        {/* Loading Overlay */}
+        {(isTracing || fuseStatus) && (
+          <div style={{
+            position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+            backgroundColor: 'rgba(15, 23, 42, 0.8)', zIndex: 10,
+            display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center'
           }}>
-            <div className="spinner" style={{ 
-              width: '40px', height: '40px', border: '4px solid #334155', borderTopColor: '#60a5fa', borderRadius: '50%', animation: 'spin 1s linear infinite' 
+            <div className="spinner" style={{
+              width: '40px', height: '40px', border: '4px solid #334155',
+              borderTop: '4px solid #3b82f6', borderRadius: '50%',
+              animation: 'spin 1s linear infinite', marginBottom: '1rem'
             }} />
-            <span style={{ fontWeight: 'bold' }}>{isTracing}</span>
+            <div style={{ color: '#f8fafc', fontSize: '1.2rem', fontWeight: 'bold' }}>
+              {fuseStatus || isTracing}
+            </div>
             <style>{`@keyframes spin { 100% { transform: rotate(360deg); } }`}</style>
           </div>
         )}
         
-        {!svgUrl && !isTracing && (
+        {!svgUrl && !isTracing && !fuseStatus && (
           <div className="empty-state">
             Upload an SVG or Image to get started
           </div>
@@ -582,24 +708,25 @@ function App() {
               <Center>
                 <group ref={sceneRef}>
                   <SvgModel 
+                    ref={svgModelRef}
                     svgUrl={svgUrl} 
                     selectByColor={selectByColor}
                     sealGaps={sealGaps}
                     cutOverlaps={cutOverlaps}
-                    selectedMeshIndices={selectedMeshIndices}
+                    selectedMeshIds={selectedMeshIds}
                     meshDepths={meshDepths}
                     meshColorOverrides={meshColorOverrides}
-                    onSelect={(indices, shiftKey) => {
-                      setSelectedMeshIndices(prev => {
+                    onSelect={(ids, shiftKey) => {
+                      setSelectedMeshIds(prev => {
                         if (shiftKey) {
-                          const isAdding = !prev.includes(indices[0]);
+                          const isAdding = !prev.includes(ids[0]);
                           if (isAdding) {
-                            return [...new Set([...prev, ...indices])];
+                            return [...new Set([...prev, ...ids])];
                           } else {
-                            return prev.filter(i => !indices.includes(i));
+                            return prev.filter(i => !ids.includes(i));
                           }
                         }
-                        return indices;
+                        return ids;
                       });
                     }}
                     onVerticesCalculated={setVertexCount}
