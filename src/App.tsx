@@ -132,9 +132,29 @@ function App() {
   const handleExport = () => {
     if (!sceneRef.current) return;
     
+    // Clone the scene so we don't modify the live React components
+    const exportScene = sceneRef.current.clone();
+    
+    // Reset selection state (pink color, emissive, and raised Z-position) back to original before exporting
+    exportScene.traverse((child) => {
+      if ((child as THREE.Mesh).isMesh) {
+        const mesh = child as THREE.Mesh;
+        if (mesh.userData.originalColorHex !== undefined) {
+          mesh.material = (mesh.material as THREE.Material).clone();
+          const mat = mesh.material as THREE.MeshStandardMaterial;
+          mat.color = new THREE.Color("#" + mesh.userData.originalColorHex);
+          mat.emissive = new THREE.Color(0x000000);
+          mat.emissiveIntensity = 0;
+        }
+        if (mesh.userData.originalZPosition !== undefined) {
+          mesh.position.z = mesh.userData.originalZPosition;
+        }
+      }
+    });
+    
     const exporter = new GLTFExporter();
     exporter.parse(
-      sceneRef.current,
+      exportScene,
       (gltf) => {
         const output = JSON.stringify(gltf, null, 2);
         const blob = new Blob([output], { type: 'text/plain' });

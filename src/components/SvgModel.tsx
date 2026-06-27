@@ -397,6 +397,7 @@ export const SvgModel: React.FC<SvgModelProps> = ({
           <mesh 
             key={index} 
             position={[0, 0, zPosition]}
+            userData={{ originalColorHex: item.colorHex, originalZPosition: baseZOffset }}
             onClick={(e) => {
               e.stopPropagation();
               const clickedItem = shapesWithColors[index];
