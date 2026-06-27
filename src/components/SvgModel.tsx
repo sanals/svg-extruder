@@ -84,7 +84,7 @@ export interface SvgModelProps {
 
 export interface SvgModelRef {
   fuseSelected: (idsToFuse: string[], onProgress: (msg: string) => void) => Promise<string | null>;
-  sliceAndExport: (buildPlateSize: number, gridSize: number, printerModel: string, mergeByColor: boolean, onProgress: (msg: string) => void) => Promise<Blob | null>;
+  sliceAndExport: (buildPlateSize: number, gridSize: string, printerModel: string, mergeByColor: boolean, onProgress: (msg: string) => void) => Promise<Blob | null>;
 }
 
 export const SvgModel = React.forwardRef<SvgModelRef, SvgModelProps>(({
@@ -184,7 +184,7 @@ export const SvgModel = React.forwardRef<SvgModelRef, SvgModelProps>(({
       return newId;
     },
 
-    sliceAndExport: async (buildPlateSize: number, gridSize: number, printerModel: string, mergeByColor: boolean, onProgress: (msg: string) => void) => {
+    sliceAndExport: async (buildPlateSize: number, gridSize: string, printerModel: string, mergeByColor: boolean, onProgress: (msg: string) => void) => {
       if (shapesWithColors.length === 0) return null;
 
       onProgress("Analyzing model dimensions...");
@@ -207,15 +207,22 @@ export const SvgModel = React.forwardRef<SvgModelRef, SvgModelProps>(({
       const rawWidth = maxX - minX;
       const rawHeight = maxY - minY;
 
-      const gridCols = gridSize;
-      const gridRows = gridSize;
+      const [colsStr, rowsStr] = gridSize.split("x");
+      const gridCols = parseInt(colsStr, 10);
+      const gridRows = parseInt(rowsStr, 10);
 
       // Calculate scale to fit SVG exactly within the physical grid (with margins)
       const SAFE_MARGIN_PERCENT = 200 / 256;
       const usablePlateSize = buildPlateSize * SAFE_MARGIN_PERCENT;
-      const targetMaxDim = usablePlateSize * Math.max(gridCols, gridRows);
-      const currentPhysicalMaxDim = Math.max(rawWidth, rawHeight) * 0.1;
-      const scaleFactor = targetMaxDim / currentPhysicalMaxDim;
+      
+      const targetMaxWidth = usablePlateSize * gridCols;
+      const targetMaxHeight = usablePlateSize * gridRows;
+      const currentPhysicalWidth = rawWidth * 0.1;
+      const currentPhysicalHeight = rawHeight * 0.1;
+
+      const scaleX = targetMaxWidth / currentPhysicalWidth;
+      const scaleY = targetMaxHeight / currentPhysicalHeight;
+      const scaleFactor = Math.min(scaleX, scaleY);
 
       // Final physical size of the SVG
       const finalPhysicalWidth = rawWidth * 0.1 * scaleFactor;

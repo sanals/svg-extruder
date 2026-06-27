@@ -28,7 +28,7 @@ function App() {
   const [fuseStatus, setFuseStatus] = useState<string | null>(null);
   
   const [printerProfile, setPrinterProfile] = useState<'A1 Mini (180x180)' | 'X1/P1/A1 (256x256)'>('X1/P1/A1 (256x256)');
-  const [gridSize, setGridSize] = useState<number>(2);
+  const [gridSize, setGridSize] = useState<string>("2x2");
   const buildPlateSize = printerProfile === 'A1 Mini (180x180)' ? 180 : 256;
   const printerModel = printerProfile === 'A1 Mini (180x180)' ? 'a1_mini' : 'x1c';
   const [exportStatus, setExportStatus] = useState<string | null>(null);
@@ -722,13 +722,13 @@ function App() {
                 <label className="checkbox-label" style={{ fontSize: '0.75rem' }}>Grid Size</label>
                 <select 
                   value={gridSize} 
-                  onChange={(e) => setGridSize(Number(e.target.value))}
+                  onChange={(e) => setGridSize(e.target.value)}
                   style={{ width: '100%', padding: '4px', borderRadius: '4px', border: '1px solid #334155', background: '#0f172a', color: 'white' }}
                 >
-                  <option value={1}>1x1 (Single Plate)</option>
-                  <option value={2}>2x2 (4 Plates)</option>
-                  <option value={3}>3x3 (9 Plates)</option>
-                  <option value={4}>4x4 (16 Plates)</option>
+                  <option value="1x1">1x1 (Single Plate)</option>
+                  <option value="2x2">2x2 (4 Plates)</option>
+                  <option value="1x2">1x2 (2 Plates Vertical)</option>
+                  <option value="2x1">2x1 (2 Plates Horizontal)</option>
                 </select>
               </div>
             </div>
