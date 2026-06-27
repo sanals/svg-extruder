@@ -3,6 +3,7 @@ import { Upload, Download, Undo } from 'lucide-react';
 import { Canvas } from '@react-three/fiber';
 import { OrbitControls, Center } from '@react-three/drei';
 import * as THREE from 'three';
+import * as BufferGeometryUtils from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js';
 import ImageTracer from 'imagetracerjs';
 import { SvgModel } from './components/SvgModel';
@@ -16,7 +17,8 @@ function App() {
   const [isTracing, setIsTracing] = useState<string | null>(null);
   const [selectByColor, setSelectByColor] = useState<boolean>(false);
   const [sealGaps, setSealGaps] = useState<boolean>(true);
-  const [cutOverlaps, setCutOverlaps] = useState<boolean>(false);
+  const [cutOverlaps, setCutOverlaps] = useState<boolean>(true);
+  const [mergeBeforeExport, setMergeBeforeExport] = useState<boolean>(true);
   const [history, setHistory] = useState<Record<number, number>[]>([]);
   
   const sceneRef = useRef<THREE.Group>(null);
@@ -152,9 +154,57 @@ function App() {
       }
     });
     
+    let finalExportObject: THREE.Object3D = exportScene;
+    
+    if (mergeBeforeExport) {
+      const geometries: THREE.BufferGeometry[] = [];
+      const materials: THREE.Material[] = [];
+      let meshesParent: THREE.Object3D | null = null;
+      
+      exportScene.traverse((child) => {
+        if ((child as THREE.Mesh).isMesh) {
+          const mesh = child as THREE.Mesh;
+          if (!meshesParent) meshesParent = mesh.parent;
+          
+          // Apply local transform to geometry so it's baked in relative to the group
+          mesh.updateMatrix();
+          let geom = mesh.geometry.clone();
+          
+          // mergeGeometries requires all geometries to have the exact same attributes (indexed vs non-indexed)
+          // ExtrudeGeometry is indexed, ShapeGeometry (depth=0) is non-indexed. Force all to be non-indexed!
+          if (geom.index) {
+            geom = geom.toNonIndexed();
+          }
+          
+          geom.applyMatrix4(mesh.matrix);
+          geometries.push(geom);
+          materials.push(mesh.material as THREE.Material);
+        }
+      });
+      
+      if (geometries.length > 0 && meshesParent) {
+        try {
+          // true flag tells it to create groups for multi-materials, preserving original colors!
+          const mergedGeometry = BufferGeometryUtils.mergeGeometries(geometries, true);
+          const mergedMesh = new THREE.Mesh(mergedGeometry, materials);
+          
+          // Replace all individual meshes with the single merged mesh
+          // This perfectly preserves the parent's scale (which flips the SVG right-side up)
+          const parent = meshesParent as THREE.Object3D;
+          parent.clear();
+          parent.add(mergedMesh);
+          
+          finalExportObject = exportScene;
+        } catch (e) {
+          console.error("Failed to merge geometries:", e);
+          alert("Failed to merge geometries. Exporting as separate parts.");
+        }
+      }
+    }
+    
     const exporter = new GLTFExporter();
     exporter.parse(
-      exportScene,
+      finalExportObject,
       (gltf) => {
         const output = JSON.stringify(gltf, null, 2);
         const blob = new Blob([output], { type: 'text/plain' });
@@ -332,6 +382,17 @@ function App() {
         </div>
 
         <div style={{ marginTop: 'auto' }}>
+          <div className="control-group">
+            <label className="checkbox-label" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}>
+              <input 
+                type="checkbox" 
+                checked={mergeBeforeExport} 
+                onChange={(e) => setMergeBeforeExport(e.target.checked)}
+              />
+              Join objects for export (Single Mesh)
+            </label>
+          </div>
+
           <button 
             disabled={!svgUrl} 
             style={{ width: '100%' }}
