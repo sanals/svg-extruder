@@ -76,19 +76,20 @@ export interface SvgModelProps {
   selectedMeshIds: string[];
   meshDepths: Record<string, number>;
   meshColorOverrides: Record<string, string>;
-  onSelect: (ids: string[], shiftKey: boolean) => void;
+  onSelect: (ids: string[], multi: boolean) => void;
   onVerticesCalculated?: (count: number) => void;
+  zAlignment?: 'bottom' | 'top';
   onParseProgress?: (msg: string | null) => void;
   onParseComplete?: (extractedColors: { id: string, colorHex: string }[]) => void;
 }
 
 export interface SvgModelRef {
   fuseSelected: (idsToFuse: string[], onProgress: (msg: string) => void) => Promise<string | null>;
-  sliceAndExport: (buildPlateSize: number, gridSize: string, printerModel: string, mergeByColor: boolean, onProgress: (msg: string) => void) => Promise<Blob | null>;
+  sliceAndExport: (buildPlateSize: number, gridSize: string, printerModel: string, mergeByColor: boolean, zAlignment: 'bottom' | 'top', onProgress: (msg: string) => void) => Promise<Blob | null>;
 }
 
 export const SvgModel = React.forwardRef<SvgModelRef, SvgModelProps>(({
-  svgUrl, selectByColor, sealGaps, cutOverlaps, selectedMeshIds, meshDepths, meshColorOverrides = {}, onSelect, onVerticesCalculated, onParseProgress, onParseComplete
+  svgUrl, selectByColor, sealGaps, cutOverlaps, selectedMeshIds, meshDepths, meshColorOverrides = {}, onSelect, onVerticesCalculated, onParseProgress, onParseComplete, zAlignment = 'bottom'
 }, ref) => {
   const svgData = useLoader(SVGLoader, svgUrl);
   const groupRef = React.useRef<THREE.Group>(null);
@@ -184,15 +185,30 @@ export const SvgModel = React.forwardRef<SvgModelRef, SvgModelProps>(({
       return newId;
     },
 
-    sliceAndExport: async (buildPlateSize: number, gridSize: string, printerModel: string, mergeByColor: boolean, onProgress: (msg: string) => void) => {
+    sliceAndExport: async (buildPlateSize: number, gridSize: string, printerModel: string, mergeByColor: boolean, zAlignment: 'bottom' | 'top', onProgress: (msg: string) => void) => {
       if (shapesWithColors.length === 0) return null;
 
       onProgress("Analyzing model dimensions...");
       await new Promise(r => requestAnimationFrame(() => setTimeout(r, 0)));
 
-      // 1. Calculate raw SVG bounding box
+      // 1. Calculate raw SVG bounding box and max depth
       let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+      const maxDepth = shapesWithColors.length > 0 ? Math.max(...shapesWithColors.map(item => meshDepths[item.id] ?? 0)) : 0;
+      
+      let maxArea = -1;
+      let baseItemId = "";
+
       shapesWithColors.forEach(item => {
+        let area = 0;
+        item.shapes.forEach(shape => {
+          const pts = shape.getPoints();
+          area += Math.abs(THREE.ShapeUtils.area(pts));
+        });
+        if (area > maxArea) {
+          maxArea = area;
+          baseItemId = item.id;
+        }
+
         item.shapes.forEach(shape => {
           const pts = shape.getPoints();
           pts.forEach(p => {
@@ -314,7 +330,11 @@ export const SvgModel = React.forwardRef<SvgModelRef, SvgModelProps>(({
             const clippedShapes = multiPolygonToShapes(resultMultiPoly);
 
             if (clippedShapes.length > 0) {
-              const depth = meshDepths[item.id] ?? 0;
+              let depth = meshDepths[item.id] ?? 0;
+              if (zAlignment === 'top' && item.id !== baseItemId && depth === maxDepth && depth > 6) {
+                depth = 6;
+              }
+
               let geom: THREE.BufferGeometry;
               if (depth === 0) {
                 geom = new THREE.ShapeGeometry(clippedShapes);
@@ -328,17 +348,47 @@ export const SvgModel = React.forwardRef<SvgModelRef, SvgModelProps>(({
                 });
               }
 
+              const matrix = new THREE.Matrix4().makeScale(
+                0.1 * scaleFactor,
+                -0.1 * scaleFactor,
+                0.1
+              );
+
+              if (zAlignment === 'top') {
+                const zOffset = maxDepth - depth;
+                if (zOffset !== 0) {
+                  geom.translate(0, 0, zOffset);
+                  
+                  // Generate support block using the base color to prevent empty space and overhangs
+                  let supportGeom: THREE.BufferGeometry = new THREE.ExtrudeGeometry(clippedShapes, {
+                    depth: zOffset,
+                    bevelEnabled: sealGaps,
+                    bevelSize: sealGaps ? 0.2 : 0,
+                    bevelThickness: sealGaps ? 0.05 : 0,
+                    bevelSegments: sealGaps ? 1 : 0
+                  });
+                  if (supportGeom.index) supportGeom = supportGeom.toNonIndexed();
+                  supportGeom.deleteAttribute('normal');
+                  supportGeom.deleteAttribute('uv');
+                  supportGeom.applyMatrix4(matrix);
+
+                  const baseItem = shapesWithColors.find(it => it.id === baseItemId);
+                  const baseHex = baseItem ? (meshColorOverrides[baseItem.id] ?? baseItem.colorHex) : "CCCCCC";
+
+                  itemsForPlate.push({
+                    geometry: supportGeom,
+                    colorHex: `#${baseHex}`,
+                    name: `Support_${item.id}`
+                  });
+                }
+              }
+
               if (geom.index) {
                 geom = geom.toNonIndexed();
               }
               geom.deleteAttribute('normal');
               geom.deleteAttribute('uv');
 
-              const matrix = new THREE.Matrix4().makeScale(
-                0.1 * scaleFactor,
-                -0.1 * scaleFactor,
-                0.1
-              );
               geom.applyMatrix4(matrix);
 
               const overriddenHex = meshColorOverrides[item.id];
@@ -734,13 +784,30 @@ export const SvgModel = React.forwardRef<SvgModelRef, SvgModelProps>(({
         const baseColor = overriddenHex ? new THREE.Color(`#${overriddenHex}`) : item.color;
 
         const color = isSelected ? "hotpink" : baseColor;
-        const depth = meshDepths[item.id] ?? 0;
+        let depth = meshDepths[item.id] ?? 0;
+
+        // Auto-thin non-base details if Top alignment is active and they use the max depth
+        const maxDepth = shapesWithColors.length > 0 ? Math.max(...shapesWithColors.map(it => meshDepths[it.id] ?? 0)) : 0;
+        let baseItemId = "";
+        if (zAlignment === 'top') {
+          let maxArea = -1;
+          shapesWithColors.forEach(it => {
+            let area = 0;
+            it.shapes.forEach(shape => { area += Math.abs(THREE.ShapeUtils.area(shape.getPoints())); });
+            if (area > maxArea) { maxArea = area; baseItemId = it.id; }
+          });
+          if (item.id !== baseItemId && depth === maxDepth && depth > 6) {
+            depth = 6;
+          }
+        }
+
+        const zAlignOffset = (zAlignment === 'top') ? (maxDepth - depth) * 0.1 : 0;
 
         // Base offset to prevent z-fighting (still slightly useful even after boolean subtraction due to precision issues)
         const baseZOffset = index * 0.001;
         // If selected, add an offset larger than the maximum possible base offset so it jumps to the front
         const selectedZOffset = shapesWithColors.length * 0.001 + 0.1;
-        const zPosition = isSelected ? baseZOffset + selectedZOffset : baseZOffset;
+        const zPosition = (isSelected ? baseZOffset + selectedZOffset : baseZOffset) + zAlignOffset;
 
         if (!item.shapes || item.shapes.length === 0) return null;
 
@@ -757,25 +824,25 @@ export const SvgModel = React.forwardRef<SvgModelRef, SvgModelProps>(({
               onSelect(ids, e.shiftKey);
             }}
           >
-            {depth === 0 ? (
-              <shapeGeometry args={[item.shapes]} />
-            ) : (
-              <extrudeGeometry
-                args={[item.shapes, {
-                  depth,
-                  bevelEnabled: sealGaps,
-                  bevelSize: sealGaps ? 0.2 : 0,
-                  bevelThickness: sealGaps ? 0.05 : 0,
-                  bevelSegments: sealGaps ? 1 : 0
-                }]}
+              {depth === 0 ? (
+                <shapeGeometry args={[item.shapes]} />
+              ) : (
+                <extrudeGeometry
+                  args={[item.shapes, {
+                    depth,
+                    bevelEnabled: sealGaps,
+                    bevelSize: sealGaps ? 0.2 : 0,
+                    bevelThickness: sealGaps ? 0.05 : 0,
+                    bevelSegments: sealGaps ? 1 : 0
+                  }]}
+                />
+              )}
+              <meshStandardMaterial
+                color={color}
+                side={THREE.DoubleSide}
+                emissive={isSelected ? new THREE.Color("hotpink") : new THREE.Color(0x000000)}
+                emissiveIntensity={isSelected ? 0.5 : 0}
               />
-            )}
-            <meshStandardMaterial
-              color={color}
-              side={THREE.DoubleSide}
-              emissive={isSelected ? new THREE.Color("hotpink") : new THREE.Color(0x000000)}
-              emissiveIntensity={isSelected ? 0.5 : 0}
-            />
           </mesh>
         );
       })}
