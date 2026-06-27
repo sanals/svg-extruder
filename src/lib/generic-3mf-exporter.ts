@@ -148,7 +148,8 @@ ${partSettingsXmls.join("\n")}
   // 3. Assemble Bambu 3dmodel.model
   const modelXml = `<?xml version="1.0" encoding="UTF-8"?>
 <model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" xmlns:p="http://schemas.bambulab.com/package/2021" xmlns:m="http://schemas.microsoft.com/3dmanufacturing/material/2015/02" requiredextensions="p">
-  <metadata name="BambuStudio:Version">01.09.05.51</metadata>
+  <metadata name="Application">BambuStudio-02.06.00.51</metadata>
+  <metadata name="BambuStudio:3mfVersion">1</metadata>
   <resources>
     <m:colorgroup id="1">
 ${colorEntries}
@@ -203,6 +204,23 @@ ${buildItems.join("\n")}
   const { bambuProjectSettings } = await import("./bambu-project-settings");
 
   const baseConfig = JSON.parse(bambuProjectSettings);
+  const originalCount = baseConfig.filament_colour.length;
+  const newCount = Math.max(1, colorsArray.length);
+
+  for (const key of Object.keys(baseConfig)) {
+    if (Array.isArray(baseConfig[key]) && baseConfig[key].length === originalCount) {
+      if (newCount <= originalCount) {
+        baseConfig[key] = baseConfig[key].slice(0, newCount);
+      } else {
+        const arr = [...baseConfig[key]];
+        while (arr.length < newCount) {
+          arr.push(arr[0]);
+        }
+        baseConfig[key] = arr;
+      }
+    }
+  }
+
   baseConfig.filament_colour = colorsArray;
   baseConfig.filament_map = uniqueColors.map((_, i) => (i + 1).toString());
 
