@@ -2,7 +2,6 @@ import React from 'react';
 import * as THREE from 'three';
 import { SVGLoader } from 'three/examples/jsm/loaders/SVGLoader.js';
 import { useLoader } from '@react-three/fiber';
-import polygonClipping from 'polygon-clipping';
 import ClipperLib from 'clipper-lib';
 
 // --- HELPER TYPES FOR POLYGON CLIPPING ---
@@ -118,6 +117,66 @@ export const SvgModel: React.FC<SvgModelProps> = ({
           return !(b2.minX > b1.maxX || b2.maxX < b1.minX || b2.minY > b1.maxY || b2.maxY < b1.minY);
         };
 
+        const performClipperBoolean = (subjMultiPoly: MultiPolygon, clipMultiPoly: MultiPolygon | null, clipType: number): MultiPolygon => {
+          const scale = 10000;
+          const clipper = new ClipperLib.Clipper();
+          
+          const addMultiPoly = (multiPoly: MultiPolygon, polyType: number) => {
+            for (const poly of multiPoly) {
+              for (let i = 0; i < poly.length; i++) {
+                const ring = poly[i];
+                if (ring.length < 3) continue;
+                const clipperPath = ring.map(p => ({ X: Math.round(p[0] * scale), Y: Math.round(p[1] * scale) }));
+                
+                // Enforce winding order based on array structure (poly[0] is outer, rest are holes)
+                // This forces holes to have the opposite winding direction of outers, preserving them in pftNonZero
+                const isOuter = (i === 0);
+                const orient = ClipperLib.Clipper.Orientation(clipperPath);
+                if (isOuter !== orient) {
+                  clipperPath.reverse();
+                }
+                
+                // @ts-ignore
+                clipper.AddPath(clipperPath, polyType, true);
+              }
+            }
+          };
+          
+          addMultiPoly(subjMultiPoly, ClipperLib.PolyType.ptSubject);
+          if (clipMultiPoly) {
+            addMultiPoly(clipMultiPoly, ClipperLib.PolyType.ptClip);
+          }
+          
+          // @ts-ignore
+          const solutionTree = new ClipperLib.PolyTree();
+          // @ts-ignore
+          clipper.Execute(clipType, solutionTree, ClipperLib.PolyFillType.pftNonZero, ClipperLib.PolyFillType.pftNonZero);
+          
+          const resultMultiPoly: MultiPolygon = [];
+          const parsePolyNode = (node: any, multiPoly: MultiPolygon) => {
+            if (!node.IsHole()) {
+              const ring: Ring = node.Contour().map((p: any) => [p.X / scale, p.Y / scale]);
+              if (ring.length > 0 && (ring[0][0] !== ring[ring.length - 1][0] || ring[0][1] !== ring[ring.length - 1][1])) ring.push([...ring[0]]);
+              
+              if (ring.length >= 4) {
+                const poly = [ring];
+                node.Childs().forEach((child: any) => {
+                  const holeRing: Ring = child.Contour().map((p: any) => [p.X / scale, p.Y / scale]);
+                  if (holeRing.length > 0 && (holeRing[0][0] !== holeRing[holeRing.length - 1][0] || holeRing[0][1] !== holeRing[holeRing.length - 1][1])) holeRing.push([...holeRing[0]]);
+                  if (holeRing.length >= 4) poly.push(holeRing);
+                  
+                  child.Childs().forEach((nestedNode: any) => parsePolyNode(nestedNode, multiPoly));
+                });
+                multiPoly.push(poly);
+              }
+            }
+          };
+          
+          // @ts-ignore
+          solutionTree.Childs().forEach((child: any) => parsePolyNode(child, resultMultiPoly));
+          return resultMultiPoly;
+        };
+
         const newSvgDataPaths: any[] = [];
         const processedNodes = new Set();
         
@@ -127,28 +186,6 @@ export const SvgModel: React.FC<SvgModelProps> = ({
           const node = path.userData?.node;
           if (node && processedNodes.has(node)) return;
           if (node) processedNodes.add(node);
-
-          // Process FILL geometry
-          let fillColor = path.userData?.style?.fill;
-          if (fillColor === 'currentColor') fillColor = '#000000';
-          if (fillColor !== undefined && fillColor !== 'none') {
-            // @ts-ignore - Three.js types are outdated for ShapePath.toShapes
-            const shapes = path.toShapes(true);
-            let multiPoly: MultiPolygon = shapes.map(shapeToPolygon);
-            try {
-              // @ts-ignore
-              multiPoly = polygonClipping.union(multiPoly);
-            } catch(e) {}
-            
-            if (multiPoly.length > 0) {
-              layerPolygons.push(multiPoly);
-              layerBBoxes.push(getBoundingBox(multiPoly));
-              // Clone path for fill
-              const fillPath = Object.assign(Object.create(Object.getPrototypeOf(path)), path);
-              fillPath.color = new THREE.Color().setStyle(fillColor);
-              newSvgDataPaths.push(fillPath);
-            }
-          }
 
           // Process STROKE geometry natively via Polygon Buffering!
           let strokeColor = path.userData?.style?.stroke;
@@ -215,6 +252,24 @@ export const SvgModel: React.FC<SvgModelProps> = ({
               }
             }
           }
+
+          // Process FILL geometry
+          let fillColor = path.userData?.style?.fill;
+          if (fillColor === 'currentColor') fillColor = '#000000';
+          if (fillColor !== undefined && fillColor !== 'none') {
+            // @ts-ignore - Three.js types are outdated for ShapePath.toShapes
+            const shapes = path.toShapes(true);
+            let multiPoly: MultiPolygon = shapes.map(shapeToPolygon);
+            
+            if (multiPoly.length > 0) {
+              layerPolygons.push(multiPoly);
+              layerBBoxes.push(getBoundingBox(multiPoly));
+              // Clone path for fill
+              const fillPath = Object.assign(Object.create(Object.getPrototypeOf(path)), path);
+              fillPath.color = new THREE.Color().setStyle(fillColor);
+              newSvgDataPaths.push(fillPath);
+            }
+          }
         });
 
         // Replace paths array so final geometry indexing matches perfectly
@@ -278,7 +333,7 @@ export const SvgModel: React.FC<SvgModelProps> = ({
                 for (const abovePoly of overlappingAbovePolys) {
                   try {
                     // @ts-ignore
-                    result = polygonClipping.difference(result, abovePoly);
+                    result = performClipperBoolean(result, abovePoly, ClipperLib.ClipType.ctDifference);
                   } catch (e) {
                     console.warn(`Boolean subtraction of a layer failed for layer ${i}, skipping this specific overlap:`, e);
                   }
