@@ -1,5 +1,6 @@
 import JSZip from "jszip"
 import * as THREE from "three"
+import * as BufferGeometryUtils from "three/examples/jsm/utils/BufferGeometryUtils.js"
 
 export interface PrintItem {
   geometry: THREE.BufferGeometry // MUST have normals and position attributes!
@@ -57,8 +58,14 @@ function generateMeshObjectXml(
   templateId: number,
   colorIndex: number
 ): string {
-  const geo = item.geometry.index ? item.geometry.toNonIndexed() : item.geometry.clone()
+  let geo = item.geometry.clone()
+  if (geo.index) {
+    geo = geo.toNonIndexed() // Flatten first to guarantee clean welding
+  }
+  geo = BufferGeometryUtils.mergeVertices(geo, 1e-4)
+
   const pos = geo.getAttribute("position")
+  const index = geo.getIndex()
   const verts: string[] = []
   const tris: string[] = []
 
@@ -66,8 +73,10 @@ function generateMeshObjectXml(
     verts.push(`<vertex x="${fmt(pos.getX(i))}" y="${fmt(pos.getY(i))}" z="${fmt(pos.getZ(i))}"/>`)
   }
 
-  for (let v = 0; v < pos.count; v += 3) {
-    tris.push(`<triangle v1="${v}" v2="${v + 1}" v3="${v + 2}" pid="1" p1="${colorIndex}"/>`)
+  if (index) {
+    for (let v = 0; v < index.count; v += 3) {
+      tris.push(`<triangle v1="${index.getX(v)}" v2="${index.getX(v + 1)}" v3="${index.getX(v + 2)}" pid="1" p1="${colorIndex}"/>`)
+    }
   }
 
   return `    <object id="${templateId}" type="model">\n` +
