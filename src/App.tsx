@@ -148,9 +148,8 @@ function App() {
           mat.emissive = new THREE.Color(0x000000);
           mat.emissiveIntensity = 0;
         }
-        if (mesh.userData.originalZPosition !== undefined) {
-          mesh.position.z = mesh.userData.originalZPosition;
-        }
+        // Force Z-position to 0 during export so all parts share the exact same base plane for 3D printing!
+        mesh.position.z = 0;
       }
     });
     

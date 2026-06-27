@@ -90,9 +90,13 @@ export const SvgModel: React.FC<SvgModelProps> = ({
   React.useEffect(() => {
     if (!svgData) return;
 
-    // Small delay to allow React to paint the "Parsing" text
-    const timeout1 = setTimeout(() => {
+    let isMounted = true;
+    
+    const processGeometry = async () => {
       try {
+        // Guarantee a frame render by combining requestAnimationFrame and setTimeout
+        const yieldThread = () => new Promise(resolve => requestAnimationFrame(() => setTimeout(resolve, 0)));
+        
         // 1. Convert all SVG paths into MultiPolygons and clean them up
         const layerPolygons: MultiPolygon[] = [];
         const layerBBoxes: { minX: number, minY: number, maxX: number, maxY: number }[] = [];
@@ -117,7 +121,7 @@ export const SvgModel: React.FC<SvgModelProps> = ({
           return !(b2.minX > b1.maxX || b2.maxX < b1.minX || b2.minY > b1.maxY || b2.maxY < b1.minY);
         };
 
-        const performClipperBoolean = (subjMultiPoly: MultiPolygon, clipMultiPoly: MultiPolygon | null, clipType: number): MultiPolygon => {
+        const performClipperBoolean = (subjMultiPoly: MultiPolygon, clipMultiPolys: MultiPolygon[], clipType: number): MultiPolygon => {
           const scale = 10000;
           const clipper = new ClipperLib.Clipper();
           
@@ -143,8 +147,8 @@ export const SvgModel: React.FC<SvgModelProps> = ({
           };
           
           addMultiPoly(subjMultiPoly, ClipperLib.PolyType.ptSubject);
-          if (clipMultiPoly) {
-            addMultiPoly(clipMultiPoly, ClipperLib.PolyType.ptClip);
+          for (const clipPoly of clipMultiPolys) {
+            addMultiPoly(clipPoly, ClipperLib.PolyType.ptClip);
           }
           
           // @ts-ignore
@@ -180,31 +184,38 @@ export const SvgModel: React.FC<SvgModelProps> = ({
         const newSvgDataPaths: any[] = [];
         const processedNodes = new Set();
         
-        svgData.paths.forEach((path: any) => {
-          // SVGLoader emits duplicate paths if an element has both a fill and stroke.
-          // By tracking the DOM node, we process each element exactly once, generating both its fill and stroke in the correct Z-order!
+        if (onParseProgress) onParseProgress("Step 1/3: Extracting SVG layers...");
+        await yieldThread();
+        
+        let pathIndex = 0;
+        for (const path of svgData.paths) {
+          if (!isMounted) return;
+          pathIndex++;
+          
+          if (onParseProgress && pathIndex % Math.max(1, Math.floor(svgData.paths.length / 10)) === 0) {
+            onParseProgress(`Step 2/3: Converting shapes (${pathIndex}/${svgData.paths.length})...`);
+            await yieldThread();
+          }
+
           const node = path.userData?.node;
-          if (node && processedNodes.has(node)) return;
+          if (node && processedNodes.has(node)) continue;
           if (node) processedNodes.add(node);
 
           // Process STROKE geometry natively via Polygon Buffering!
-          let strokeColor = path.userData?.style?.stroke;
+          let strokeColor = (path.userData?.style as any)?.stroke;
           if (strokeColor === 'currentColor') strokeColor = '#000000';
-          let rawStrokeWidth = path.userData?.style?.strokeWidth;
-          // Handle string stroke widths like "5px" or missing ones
+          let rawStrokeWidth = (path.userData?.style as any)?.strokeWidth;
           const strokeWidth = (rawStrokeWidth !== undefined && rawStrokeWidth !== null) ? parseFloat(rawStrokeWidth.toString()) : 1;
           
           if (strokeColor !== undefined && strokeColor !== 'none' && !isNaN(strokeWidth) && strokeWidth > 0) {
             const scale = 10000;
             const co = new ClipperLib.ClipperOffset();
             
-            // Add all subpaths to ClipperOffset
             path.subPaths.forEach((subPath: any) => {
               const points = subPath.getPoints();
               if (points.length < 2) return;
               
               const clipperPath = points.map((p: any) => ({ X: Math.round(p.x * scale), Y: Math.round(p.y * scale) }));
-              // Is the subPath closed?
               const isClosed = points[0].distanceTo(points[points.length - 1]) < 0.01;
               const endType = isClosed ? ClipperLib.EndType.etClosedPolygon : ClipperLib.EndType.etOpenSquare;
               
@@ -213,13 +224,11 @@ export const SvgModel: React.FC<SvgModelProps> = ({
             
             // @ts-ignore
             const solutionTree = new ClipperLib.PolyTree();
-            // Expand by strokeWidth / 2
             co.Execute(solutionTree, (strokeWidth / 2) * scale);
             
             if (solutionTree.ChildCount() > 0) {
               let strokeMultiPoly: MultiPolygon = [];
               
-              // Helper to parse PolyTree into MultiPolygon
               const parsePolyNode = (node: any, multiPoly: MultiPolygon) => {
                 if (!node.IsHole()) {
                   const ring: Ring = node.Contour().map((p: any) => [p.X / scale, p.Y / scale]);
@@ -240,12 +249,9 @@ export const SvgModel: React.FC<SvgModelProps> = ({
               // @ts-ignore
               solutionTree.Childs().forEach((child: any) => parsePolyNode(child, strokeMultiPoly));
               
-              // ClipperLib already unions the offset geometry, so we don't need polygonClipping.union
               if (strokeMultiPoly.length > 0) {
                 layerPolygons.push(strokeMultiPoly);
                 layerBBoxes.push(getBoundingBox(strokeMultiPoly));
-                
-                // Clone path for stroke
                 const strokePath = Object.assign(Object.create(Object.getPrototypeOf(path)), path);
                 strokePath.color = new THREE.Color().setStyle(strokeColor);
                 newSvgDataPaths.push(strokePath);
@@ -254,28 +260,26 @@ export const SvgModel: React.FC<SvgModelProps> = ({
           }
 
           // Process FILL geometry
-          let fillColor = path.userData?.style?.fill;
+          let fillColor = (path.userData?.style as any)?.fill;
           if (fillColor === 'currentColor') fillColor = '#000000';
           if (fillColor !== undefined && fillColor !== 'none') {
-            // @ts-ignore - Three.js types are outdated for ShapePath.toShapes
+            // @ts-ignore
             const shapes = path.toShapes(true);
             let multiPoly: MultiPolygon = shapes.map(shapeToPolygon);
             
             if (multiPoly.length > 0) {
               layerPolygons.push(multiPoly);
               layerBBoxes.push(getBoundingBox(multiPoly));
-              // Clone path for fill
               const fillPath = Object.assign(Object.create(Object.getPrototypeOf(path)), path);
               fillPath.color = new THREE.Color().setStyle(fillColor);
               newSvgDataPaths.push(fillPath);
             }
           }
-        });
+        }
 
-        // Replace paths array so final geometry indexing matches perfectly
+        if (!isMounted) return;
         svgData.paths = newSvgDataPaths;
 
-        // Function to finalize geometry and set state
         const finalizePolygons = (finalPolys: MultiPolygon[]) => {
           const individualShapes: { color: THREE.Color, colorHex: string, shapes: THREE.Shape[] }[] = [];
           
@@ -296,70 +300,70 @@ export const SvgModel: React.FC<SvgModelProps> = ({
 
         if (!cutOverlaps) {
           finalizePolygons(layerPolygons);
-          return () => clearTimeout(timeout1);
+          return;
         }
 
-        // Asynchronous Boolean Subtraction Loop (to prevent freezing)
+        // Asynchronous Boolean Subtraction Loop
         const finalPolygons: MultiPolygon[] = [];
-        const processLayer = (i: number) => {
-          if (i >= layerPolygons.length) {
-            finalizePolygons(finalPolygons);
-            return;
-          }
-
-          // Throttle UI updates so we don't crash React with thousands of rapid state updates
+        
+        for (let i = 0; i < layerPolygons.length; i++) {
+          if (!isMounted) return;
+          
           const updateInterval = Math.max(1, Math.floor(layerPolygons.length / 100));
           if (onParseProgress && i % updateInterval === 0) {
             onParseProgress(`Step 3/3: Cutting overlaps (Layer ${i + 1} of ${layerPolygons.length})...`);
+            await yieldThread();
           }
           
-          // Yield to main thread for UI update
-          setTimeout(() => {
-            try {
-              let result = layerPolygons[i];
-              let resultBBox = layerBBoxes[i];
-              
-              // Only subtract polygons that actually physically overlap our bounding box!
-              // This turns an O(N^2) global calculation into a highly targeted local calculation,
-              // speeding up processing of 8000-layer SVGs by over 1000x.
-              const overlappingAbovePolys: MultiPolygon[] = [];
-              for (let j = i + 1; j < layerPolygons.length; j++) {
-                if (boxesIntersect(resultBBox, layerBBoxes[j])) {
-                  overlappingAbovePolys.push(layerPolygons[j]);
-                }
-              }
-              
-              if (overlappingAbovePolys.length > 0 && result.length > 0) {
-                for (const abovePoly of overlappingAbovePolys) {
-                  try {
-                    // @ts-ignore
-                    result = performClipperBoolean(result, abovePoly, ClipperLib.ClipType.ctDifference);
-                  } catch (e) {
-                    console.warn(`Boolean subtraction of a layer failed for layer ${i}, skipping this specific overlap:`, e);
-                  }
-                  if (result.length === 0) break; // completely subtracted
-                }
-              }
-              finalPolygons.push(result);
-              
-              // Process next layer
-              processLayer(i + 1);
-            } catch(e) {
-              console.error("Error during boolean step", e);
-              if (onParseComplete) onParseComplete();
+          let result = layerPolygons[i];
+          let resultBBox = layerBBoxes[i];
+          
+          const overlappingAbovePolys: MultiPolygon[] = [];
+          for (let j = i + 1; j < layerPolygons.length; j++) {
+            if (boxesIntersect(resultBBox, layerBBoxes[j])) {
+              overlappingAbovePolys.push(layerPolygons[j]);
             }
-          }, 0);
-        };
+          }
+          
+          if (overlappingAbovePolys.length > 0 && result.length > 0) {
+            // Process overlaps in chunks of 50. 
+            // Passing all 8000 to Clipper at once causes exponential slowdowns.
+            // Processing 1 at a time is too slow. 50 is the sweet spot for performance!
+            const chunkSize = 50;
+            for (let k = 0; k < overlappingAbovePolys.length; k += chunkSize) {
+              if (!isMounted) return;
+              const chunk = overlappingAbovePolys.slice(k, k + chunkSize);
+              
+              try {
+                // @ts-ignore
+                result = performClipperBoolean(result, chunk, ClipperLib.ClipType.ctDifference);
+              } catch (e) {
+                console.warn(`Boolean subtraction failed`, e);
+              }
+              
+              if (result.length === 0) break;
+              
+              // Yield after every chunk of 50 overlapping polygons to guarantee UI stays responsive
+              await yieldThread();
+            }
+          }
+          finalPolygons.push(result);
+        }
+        
+        if (!isMounted) return;
+        finalizePolygons(finalPolygons);
 
-        // Start processing layer 0
-        processLayer(0);
       } catch(e) {
         console.error("Error during parse step", e);
         if (onParseComplete) onParseComplete();
       }
-    }, 50);
+    };
 
-    return () => clearTimeout(timeout1);
+    processGeometry();
+    
+    return () => {
+      isMounted = false;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [svgData]);
 
