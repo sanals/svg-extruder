@@ -84,7 +84,7 @@ export interface SvgModelProps {
 
 export interface SvgModelRef {
   fuseSelected: (idsToFuse: string[], onProgress: (msg: string) => void) => Promise<string | null>;
-  sliceAndExport: (targetPrintSize: number, buildPlateSize: number, onProgress: (msg: string) => void) => Promise<Blob | null>;
+  sliceAndExport: (buildPlateSize: number, gridSize: number, printerModel: string, onProgress: (msg: string) => void) => Promise<Blob | null>;
 }
 
 export const SvgModel = React.forwardRef<SvgModelRef, SvgModelProps>(({ 
@@ -184,7 +184,7 @@ export const SvgModel = React.forwardRef<SvgModelRef, SvgModelProps>(({
       return newId;
     },
     
-    sliceAndExport: async (targetPrintSize: number, buildPlateSize: number, onProgress: (msg: string) => void) => {
+    sliceAndExport: async (buildPlateSize: number, gridSize: number, printerModel: string, onProgress: (msg: string) => void) => {
       if (shapesWithColors.length === 0) return null;
 
       onProgress("Analyzing model dimensions...");
@@ -207,31 +207,54 @@ export const SvgModel = React.forwardRef<SvgModelRef, SvgModelProps>(({
       const rawWidth = maxX - minX;
       const rawHeight = maxY - minY;
       
-      // The model is scaled by 0.1 natively
-      const currentPhysicalMaxDim = Math.max(rawWidth, rawHeight) * 0.1;
-      const scaleFactor = targetPrintSize / currentPhysicalMaxDim;
+      const gridCols = gridSize;
+      const gridRows = gridSize;
       
+      // Calculate scale to fit SVG exactly within the physical grid (with margins)
+      const SAFE_MARGIN_PERCENT = 200 / 256;
+      const usablePlateSize = buildPlateSize * SAFE_MARGIN_PERCENT;
+      const targetMaxDim = usablePlateSize * Math.max(gridCols, gridRows);
+      const currentPhysicalMaxDim = Math.max(rawWidth, rawHeight) * 0.1;
+      const scaleFactor = targetMaxDim / currentPhysicalMaxDim;
+      
+      // Final physical size of the SVG
       const finalPhysicalWidth = rawWidth * 0.1 * scaleFactor;
       const finalPhysicalHeight = rawHeight * 0.1 * scaleFactor;
       
-      const cols = Math.ceil(finalPhysicalWidth / buildPlateSize);
-      const rows = Math.ceil(finalPhysicalHeight / buildPlateSize);
+      // Offset to center the SVG on the logical grid
+      const gridPhysicalWidth = gridCols * buildPlateSize;
+      const gridPhysicalHeight = gridRows * buildPlateSize;
+      const offsetX = (gridPhysicalWidth - finalPhysicalWidth) / 2;
+      const offsetY = (gridPhysicalHeight - finalPhysicalHeight) / 2;
       
       // Size of each grid cell in raw SVG space
-      const cellSvgSize = buildPlateSize / (0.1 * scaleFactor);
+      const cellSvgWidth = buildPlateSize / (0.1 * scaleFactor);
+      const cellSvgHeight = buildPlateSize / (0.1 * scaleFactor);
+      
+      // Svg offset
+      const svgOffsetX = offsetX / (0.1 * scaleFactor);
+      const svgOffsetY = offsetY / (0.1 * scaleFactor);
 
       const plates: PrintPlate[] = [];
       const clipperScale = 10000;
 
-      for (let r = 0; r < rows; r++) {
-        for (let c = 0; c < cols; c++) {
-          onProgress(`Slicing quadrant ${r * cols + c + 1} of ${rows * cols}...`);
+      for (let r = 0; r < gridRows; r++) {
+        for (let c = 0; c < gridCols; c++) {
+          onProgress(`Slicing quadrant ${r * gridCols + c + 1} of ${gridRows * gridCols}...`);
           await new Promise(res => requestAnimationFrame(() => setTimeout(res, 0)));
 
-          const rectMinX = minX + c * cellSvgSize;
-          const rectMaxX = minX + (c + 1) * cellSvgSize;
-          const rectMinY = minY + r * cellSvgSize;
-          const rectMaxY = minY + (r + 1) * cellSvgSize;
+          // Calculate clip rectangle in SVG coordinate space
+          const rectMinX = minX - svgOffsetX + c * cellSvgWidth;
+          const rectMaxX = minX - svgOffsetX + (c + 1) * cellSvgWidth;
+          const rectMinY = minY - svgOffsetY + r * cellSvgHeight;
+          const rectMaxY = minY - svgOffsetY + (r + 1) * cellSvgHeight;
+          
+          const cellCenterX = (rectMinX + rectMaxX) / 2;
+          const cellCenterY = (rectMinY + rectMaxY) / 2;
+          
+          // Note: Y is inverted during applyMatrix4 scale!
+          const physicalCenterX = cellCenterX * 0.1 * scaleFactor;
+          const physicalCenterY = cellCenterY * -0.1 * scaleFactor;
 
           const clipPath = [
             { X: Math.round(rectMinX * clipperScale), Y: Math.round(rectMinY * clipperScale) },
@@ -381,7 +404,7 @@ export const SvgModel = React.forwardRef<SvgModelRef, SvgModelProps>(({
       await new Promise(r => requestAnimationFrame(() => setTimeout(r, 0)));
 
       if (plates.length > 0) {
-        return await buildMultiPlate3MF(plates);
+        return await buildMultiPlate3MF(plates, { printerModel });
       }
       return null;
     }

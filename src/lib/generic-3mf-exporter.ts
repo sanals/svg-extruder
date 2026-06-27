@@ -11,15 +11,17 @@ export interface PrintItem {
 export interface PrintPlate {
   name: string
   items: PrintItem[]
+  centerX?: number
+  centerY?: number
 }
 
 /**
  * Builds a multi-plate Bambu Studio compatible 3MF file from an array of physical plates.
  */
-export async function buildMultiPlate3MF(plates: PrintPlate[]): Promise<Blob> {
+export async function buildMultiPlate3MF(plates: PrintPlate[], options?: { printerModel?: string }): Promise<Blob> {
   const zip = new JSZip()
-  const TRAY_SIZE_X = 256
-  const TRAY_SIZE_Y = 256
+  const TRAY_SIZE_X = options?.printerModel === 'a1_mini' ? 180 : 256
+  const TRAY_SIZE_Y = options?.printerModel === 'a1_mini' ? 180 : 256
 
   // 1. Gather all unique colors for Bambu Studio <extruder> tags
   const uniqueColors: string[] = []
@@ -110,6 +112,7 @@ export async function buildMultiPlate3MF(plates: PrintPlate[]): Promise<Blob> {
 
       partSettingsXmls.push(`    <part id="${templateId}" subtype="normal_part">
       <metadata key="name" value="${cleanName}"/>
+      <metadata key="matrix" value="1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1"/>
       <metadata key="extruder" value="${extruderIndex}"/>
     </part>`)
     })
@@ -125,8 +128,19 @@ export async function buildMultiPlate3MF(plates: PrintPlate[]): Promise<Blob> {
         `    </object>`
       )
 
-      const globalX = (plateIdx % 3) * TRAY_SIZE_X
-      const globalY = -Math.floor(plateIdx / 3) * TRAY_SIZE_Y
+      let row = Math.floor(plateIdx / 3)
+      let col = plateIdx % 3
+      const match = plate.name.match(/_R(\d+)_C(\d+)/)
+      if (match) {
+        row = parseInt(match[1], 10) - 1
+        col = parseInt(match[2], 10) - 1
+      }
+      
+      const PLATE_SPACING_X = TRAY_SIZE_X * 1.2
+      const PLATE_SPACING_Y = TRAY_SIZE_Y * 1.2
+      
+      const globalX = col * PLATE_SPACING_X
+      const globalY = -row * PLATE_SPACING_Y
       buildItems.push(`    <item objectid="${masterId}" p:UUID="${generateUUID()}" transform="1 0 0 0 1 0 0 0 1 ${globalX + TRAY_SIZE_X / 2} ${globalY + TRAY_SIZE_Y / 2} 0" printable="1"/>`)
 
       modelSettingsObjects.push(`
@@ -162,12 +176,23 @@ ${buildItems.join("\n")}
 </model>`
 
   // 4. Assemble Bambu model_settings.config (Assigns extruders to objects)
-  const plateConfigs = plates.map((plate, i) => `
+  const plateConfigs = plates.map((plate, i) => {
+    // We can extract the masterId from modelSettingsObjects or just compute it.
+    // Actually, let's look at how modelSettingsObjects were built: each plate has exactly one masterId.
+    // It is pushed in order. We can parse it from modelSettingsObjects[i].
+    const match = modelSettingsObjects[i]?.match(/<object id="(\d+)">/);
+    const masterId = match ? match[1] : (i + 1).toString();
+    return `
   <plate>
     <metadata key="plater_id" value="${i + 1}"/>
     <metadata key="plater_name" value="${(plate.name || "").replace(/[<>&"']/g, "")}"/>
     <metadata key="locked" value="false"/>
-  </plate>`).join("")
+    <model_instance>
+      <metadata key="object_id" value="${masterId}"/>
+      <metadata key="instance_id" value="0"/>
+    </model_instance>
+  </plate>`;
+  }).join("")
 
   const modelSettingsXml = `<?xml version="1.0" encoding="UTF-8"?>\n<config>${modelSettingsObjects.join("")}${plateConfigs}\n</config>`
 
@@ -219,6 +244,16 @@ ${buildItems.join("\n")}
         baseConfig[key] = arr;
       }
     }
+  }
+
+  if (options?.printerModel === 'a1_mini') {
+    baseConfig["printer_model"] = "Bambu Lab A1 mini"
+    baseConfig["printer_settings_id"] = "Bambu Lab A1 mini 0.4 nozzle"
+    baseConfig["default_print_profile"] = "0.20mm Standard @BBL A1M"
+  } else {
+    baseConfig["printer_model"] = "Bambu Lab A1"
+    baseConfig["printer_settings_id"] = "Bambu Lab A1 0.4 nozzle"
+    baseConfig["default_print_profile"] = "0.20mm Standard @BBL A1"
   }
 
   baseConfig.filament_colour = colorsArray;
