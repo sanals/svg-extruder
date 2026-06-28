@@ -344,7 +344,11 @@ ${buildItems.join("\n")}
   </header>
 </config>`)
 
-  return zip.generateAsync({ type: "blob" })
+  return zip.generateAsync({ 
+    type: "blob",
+    compression: "DEFLATE",
+    compressionOptions: { level: 6 }
+  })
 }
 
 

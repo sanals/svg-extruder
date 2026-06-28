@@ -84,7 +84,7 @@ export interface SvgModelProps {
 
 export interface SvgModelRef {
   fuseSelected: (idsToFuse: string[], onProgress: (msg: string) => void) => Promise<string | null>;
-  sliceAndExport: (buildPlateSize: number, gridSize: string, printerModel: string, mergeByColor: boolean, onProgress: (msg: string) => void) => Promise<Blob | null>;
+  sliceAndExport: (buildPlateSize: number, gridSize: string, printerModel: string, mergeByColor: boolean, customScale: number, clearance: number, onProgress: (msg: string) => void) => Promise<Blob | null>;
 }
 
 export const SvgModel = React.forwardRef<SvgModelRef, SvgModelProps>(({
@@ -184,7 +184,7 @@ export const SvgModel = React.forwardRef<SvgModelRef, SvgModelProps>(({
       return newId;
     },
 
-    sliceAndExport: async (buildPlateSize: number, gridSize: string, printerModel: string, mergeByColor: boolean, onProgress: (msg: string) => void) => {
+    sliceAndExport: async (buildPlateSize: number, gridSize: string, printerModel: string, mergeByColor: boolean, customScale: number, clearance: number, onProgress: (msg: string) => void) => {
       if (shapesWithColors.length === 0) return null;
 
       onProgress("Analyzing model dimensions...");
@@ -207,8 +207,8 @@ export const SvgModel = React.forwardRef<SvgModelRef, SvgModelProps>(({
       const rawWidth = maxX - minX;
       const rawHeight = maxY - minY;
 
-      const currentPhysicalWidth = rawWidth * 0.1;
-      const currentPhysicalHeight = rawHeight * 0.1;
+      const currentPhysicalWidth = rawWidth * 0.1 * customScale;
+      const currentPhysicalHeight = rawHeight * 0.1 * customScale;
 
       const SAFE_MARGIN_PERCENT = 200 / 256;
       const usablePlateSize = buildPlateSize * SAFE_MARGIN_PERCENT;
@@ -232,12 +232,12 @@ export const SvgModel = React.forwardRef<SvgModelRef, SvgModelProps>(({
       const targetMaxWidth = usablePlateSize * gridCols;
       const targetMaxHeight = usablePlateSize * gridRows;
 
-      const scaleX = targetMaxWidth / currentPhysicalWidth;
-      const scaleY = targetMaxHeight / currentPhysicalHeight;
+      const scaleX = targetMaxWidth / (rawWidth * 0.1);
+      const scaleY = targetMaxHeight / (rawHeight * 0.1);
       let scaleFactor = Math.min(scaleX, scaleY);
 
       if (gridSize === 'auto') {
-        scaleFactor = Math.min(1, scaleFactor);
+        scaleFactor = Math.min(customScale, scaleFactor);
       }
 
       // Final physical size of the SVG
@@ -260,6 +260,62 @@ export const SvgModel = React.forwardRef<SvgModelRef, SvgModelProps>(({
 
       const plates: PrintPlate[] = [];
       const clipperScale = 10000;
+      
+      const parsePolyNode = (node: any, multiPoly: MultiPolygon) => {
+        if (!node.IsHole()) {
+          const ring: Ring = node.Contour().map((p: any) => [p.X / clipperScale, p.Y / clipperScale]);
+          if (ring.length > 0 && (ring[0][0] !== ring[ring.length - 1][0] || ring[0][1] !== ring[ring.length - 1][1])) ring.push([...ring[0]]);
+          if (ring.length >= 4) {
+            const poly = [ring];
+            node.Childs().forEach((child: any) => {
+              const holeRing: Ring = child.Contour().map((p: any) => [p.X / clipperScale, p.Y / clipperScale]);
+              if (holeRing.length > 0 && (holeRing[0][0] !== holeRing[holeRing.length - 1][0] || holeRing[0][1] !== holeRing[holeRing.length - 1][1])) holeRing.push([...holeRing[0]]);
+              if (holeRing.length >= 4) poly.push(holeRing);
+              child.Childs().forEach((nestedNode: any) => parsePolyNode(nestedNode, multiPoly));
+            });
+            multiPoly.push(poly);
+          }
+        }
+      };
+
+      onProgress("Applying assembly clearance...");
+      await new Promise(r => requestAnimationFrame(() => setTimeout(r, 0)));
+
+      const offsetShapes: Record<string, MultiPolygon> = {};
+      const offsetAmountInClipper = clearance > 0 ? -(clearance / (0.1 * scaleFactor)) * clipperScale : 0;
+
+      shapesWithColors.forEach(item => {
+        if (offsetAmountInClipper === 0) {
+           const multiPoly: MultiPolygon = [];
+           item.shapes.forEach(shape => multiPoly.push(shapeToPolygon(shape)));
+           offsetShapes[item.id] = multiPoly;
+        } else {
+           const co = new ClipperLib.ClipperOffset();
+           item.shapes.forEach(shape => {
+             const polygon = shapeToPolygon(shape);
+             for (let i = 0; i < polygon.length; i++) {
+               const ring = polygon[i];
+               if (ring.length < 3) continue;
+               const path = ring.map(p => ({ X: Math.round(p[0] * clipperScale), Y: Math.round(p[1] * clipperScale) }));
+               const isOuter = (i === 0);
+               const orient = ClipperLib.Clipper.Orientation(path);
+               if (isOuter !== orient) path.reverse();
+               // @ts-ignore
+               co.AddPath(path, ClipperLib.JoinType.jtRound, ClipperLib.EndType.etClosedPolygon);
+             }
+           });
+           
+           // @ts-ignore
+           const offsettedTree = new ClipperLib.PolyTree();
+           // @ts-ignore
+           co.Execute(offsettedTree, offsetAmountInClipper);
+           
+           const resultMultiPoly: MultiPolygon = [];
+           // @ts-ignore
+           offsettedTree.Childs().forEach((child: any) => parsePolyNode(child, resultMultiPoly));
+           offsetShapes[item.id] = resultMultiPoly;
+        }
+      });
 
       for (let r = 0; r < gridRows; r++) {
         for (let c = 0; c < gridCols; c++) {
@@ -288,8 +344,8 @@ export const SvgModel = React.forwardRef<SvgModelRef, SvgModelProps>(({
             // @ts-ignore
             clipper.AddPath(clipPath, ClipperLib.PolyType.ptClip, true);
 
-            item.shapes.forEach(shape => {
-              const polygon = shapeToPolygon(shape);
+            const multiPoly = offsetShapes[item.id];
+            multiPoly.forEach(polygon => {
               for (let i = 0; i < polygon.length; i++) {
                 const ring = polygon[i];
                 if (ring.length < 3) continue;
@@ -308,23 +364,6 @@ export const SvgModel = React.forwardRef<SvgModelRef, SvgModelProps>(({
             clipper.Execute(ClipperLib.ClipType.ctIntersection, solutionTree, ClipperLib.PolyFillType.pftNonZero, ClipperLib.PolyFillType.pftNonZero);
 
             const resultMultiPoly: MultiPolygon = [];
-            const parsePolyNode = (node: any, multiPoly: MultiPolygon) => {
-              if (!node.IsHole()) {
-                const ring: Ring = node.Contour().map((p: any) => [p.X / clipperScale, p.Y / clipperScale]);
-                if (ring.length > 0 && (ring[0][0] !== ring[ring.length - 1][0] || ring[0][1] !== ring[ring.length - 1][1])) ring.push([...ring[0]]);
-                if (ring.length >= 4) {
-                  const poly = [ring];
-                  node.Childs().forEach((child: any) => {
-                    const holeRing: Ring = child.Contour().map((p: any) => [p.X / clipperScale, p.Y / clipperScale]);
-                    if (holeRing.length > 0 && (holeRing[0][0] !== holeRing[holeRing.length - 1][0] || holeRing[0][1] !== holeRing[holeRing.length - 1][1])) holeRing.push([...holeRing[0]]);
-                    if (holeRing.length >= 4) poly.push(holeRing);
-                    child.Childs().forEach((nestedNode: any) => parsePolyNode(nestedNode, multiPoly));
-                  });
-                  multiPoly.push(poly);
-                }
-              }
-            };
-
             // @ts-ignore
             solutionTree.Childs().forEach((child: any) => parsePolyNode(child, resultMultiPoly));
             const clippedShapes = multiPolygonToShapes(resultMultiPoly);

@@ -32,6 +32,8 @@ function App() {
   const buildPlateSize = printerProfile === 'A1 Mini (180x180)' ? 180 : 256;
   const printerModel = printerProfile === 'A1 Mini (180x180)' ? 'a1_mini' : 'x1c';
   const [exportStatus, setExportStatus] = useState<string | null>(null);
+  const [customScale, setCustomScale] = useState<number>(100);
+  const [clearance, setClearance] = useState<number>(0.0);
 
   const sceneRef = useRef<THREE.Group>(null);
   const svgModelRef = useRef<SvgModelRef>(null);
@@ -161,6 +163,8 @@ function App() {
         gridSize,
         printerModel,
         mergeColors3MF,
+        customScale / 100.0,
+        mergeColors3MF ? 0 : clearance,
         (msg) => setExportStatus(msg)
       );
 
@@ -733,6 +737,42 @@ function App() {
                 </select>
               </div>
             </div>
+
+            {gridSize === 'auto' && (
+              <div style={{ marginBottom: '1rem' }}>
+                <label className="checkbox-label" style={{ fontSize: '0.75rem' }}>Scale Multiplier (%)</label>
+                <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                  <input
+                    type="range"
+                    min="10"
+                    max="500"
+                    step="10"
+                    value={customScale}
+                    onChange={(e) => setCustomScale(Number(e.target.value))}
+                    style={{ flex: 1 }}
+                  />
+                  <span style={{ fontSize: '0.75rem', width: '40px', color: 'white' }}>{customScale}%</span>
+                </div>
+              </div>
+            )}
+
+            {!mergeColors3MF && (
+              <div style={{ marginBottom: '1rem' }}>
+                <label className="checkbox-label" style={{ fontSize: '0.75rem' }}>Assembly Clearance (mm)</label>
+                <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                  <input
+                    type="range"
+                    min="0"
+                    max="0.5"
+                    step="0.05"
+                    value={clearance}
+                    onChange={(e) => setClearance(Number(e.target.value))}
+                    style={{ flex: 1 }}
+                  />
+                  <span style={{ fontSize: '0.75rem', width: '40px', color: 'white' }}>{clearance.toFixed(2)}</span>
+                </div>
+              </div>
+            )}
 
             <button
               disabled={!svgUrl || !!exportStatus}
