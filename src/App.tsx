@@ -22,7 +22,7 @@ function App() {
   const [sealGaps, setSealGaps] = useState<boolean>(true);
   const [cutOverlaps, setCutOverlaps] = useState<boolean>(true);
   const [mergeBeforeExport, setMergeBeforeExport] = useState<boolean>(false);
-  const [history, setHistory] = useState<Record<string, number>[]>([]);
+  const [history, setHistory] = useState<any[]>([]);
   const [meshColors, setMeshColors] = useState<{ id: string, colorHex: string }[]>([]);
   const [meshColorOverrides, setMeshColorOverrides] = useState<Record<string, string>>({});
   const [mergeColors3MF, setMergeColors3MF] = useState<boolean>(true);
@@ -35,6 +35,7 @@ function App() {
   const printerModel = printerProfile === 'A1 Mini (180x180)' ? 'a1_mini' : 'x1c';
   const [exportStatus, setExportStatus] = useState<string | null>(null);
   const [customScale, setCustomScale] = useState<number>(100);
+  const [scaleZProportionally, setScaleZProportionally] = useState<boolean>(false);
   const [clearance, setClearance] = useState<number>(0.0);
 
   const sceneRef = useRef<THREE.Group>(null);
@@ -107,7 +108,21 @@ function App() {
     setSelectedMeshIds(prev => [...new Set([...prev, ...idsToSelect])]);
   };
 
+  const pushToHistory = () => {
+    if (!svgModelRef.current) return;
+    setHistory(prev => [
+      ...prev,
+      {
+        meshDepths: { ...meshDepths },
+        meshColorOverrides: { ...meshColorOverrides },
+        meshColors: [...meshColors],
+        shapes: svgModelRef.current?.getShapes()
+      }
+    ]);
+  };
+
   const handleMergeColors = (targetColorHex: string) => {
+    pushToHistory();
     let idsToUpdate = selectedMeshIds;
 
     setMeshColorOverrides(prev => {
@@ -125,6 +140,7 @@ function App() {
   const handleFuseParts = async () => {
     if (!svgModelRef.current) return;
 
+    pushToHistory();
     setFuseStatus("Initializing fusion...");
     await new Promise(r => requestAnimationFrame(() => setTimeout(r, 0)));
 
@@ -149,18 +165,13 @@ function App() {
     if (!svgModelRef.current) return;
 
     try {
-      const blob = await svgModelRef.current.sliceAndExport(
-        buildPlateSize,
-        gridSize,
-        printerModel,
-        mergeColors3MF,
-        customScale / 100.0,
-        mergeColors3MF ? 0 : clearance,
+      const zipBlob = await svgModelRef.current.sliceAndExport(
+        buildPlateSize, gridSize, printerModel, mergeColors3MF, customScale / 100.0, mergeColors3MF ? 0 : clearance, scaleZProportionally,
         (msg) => setExportStatus(msg)
       );
 
-      if (blob) {
-        const url = URL.createObjectURL(blob);
+      if (zipBlob) {
+        const url = URL.createObjectURL(zipBlob);
         const link = document.createElement('a');
         link.style.display = 'none';
         link.href = url;
@@ -269,6 +280,7 @@ function App() {
   };
 
   const handleDepthChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    pushToHistory();
     const depth = parseFloat(e.target.value);
     setMeshDepths(prev => {
       const newDepths = { ...prev };
@@ -297,10 +309,16 @@ function App() {
   const handleUndo = () => {
     setHistory(prev => {
       if (prev.length === 0) return prev;
-      const newHistory = [...prev];
-      const previousState = newHistory.pop()!;
-      setMeshDepths(previousState);
-      return newHistory;
+      const snapshot = prev[prev.length - 1];
+      
+      setMeshDepths(snapshot.meshDepths);
+      setMeshColorOverrides(snapshot.meshColorOverrides);
+      setMeshColors(snapshot.meshColors);
+      if (svgModelRef.current && snapshot.shapes) {
+        svgModelRef.current.setShapes(snapshot.shapes);
+      }
+      
+      return prev.slice(0, -1);
     });
   };
 
@@ -339,6 +357,11 @@ function App() {
     });
 
     let finalExportObject: THREE.Object3D = exportScene;
+    
+    const scaleFactor = customScale / 100.0;
+    const zScale = scaleZProportionally ? scaleFactor : 1.0;
+    exportScene.scale.set(scaleFactor, scaleFactor, zScale);
+    exportScene.updateMatrixWorld(true);
 
     if (mergeBeforeExport) {
       const geometries: THREE.BufferGeometry[] = [];
@@ -427,477 +450,326 @@ function App() {
 
   return (
     <>
-      <div className="sidebar">
-        <h1 className="sidebar-header">SVG Extruder 3D</h1>
+      <div className="sidebar" style={{ padding: '1rem', gap: '1rem', width: '320px' }}>
+        <h1 className="sidebar-header" style={{ marginBottom: '0.5rem' }}>SVG Extruder 3D</h1>
 
-        <div className="control-group" style={{ display: 'flex', gap: '0.5rem' }}>
-          <label htmlFor="image-upload" style={{ flex: 1, cursor: 'pointer' }}>
-            <div role="button" className="btn-upload" style={{
-              backgroundColor: '#3b82f6',
-              color: 'white',
-              padding: '0.6em 0',
-              borderRadius: '8px',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              gap: '0.4rem',
-              fontWeight: 500,
-              fontSize: '0.85rem'
-            }}>
-              <Upload size={16} />
-              Image
+        {/* GROUP 1: INPUT & SETUP */}
+        <div className="card">
+          <div className="card-header">Input & Setup</div>
+          <div className="card-body">
+            <div style={{ display: 'flex', gap: '0.5rem' }}>
+              <label htmlFor="image-upload" style={{ flex: 1, cursor: 'pointer' }}>
+                <div role="button" className="btn-upload" style={{
+                  backgroundColor: '#3b82f6', color: 'white', padding: '0.6em 0', borderRadius: '8px',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.4rem', fontWeight: 500, fontSize: '0.85rem',
+                  transition: 'background-color 0.2s'
+                }} onMouseOver={(e) => e.currentTarget.style.backgroundColor = '#2563eb'} onMouseOut={(e) => e.currentTarget.style.backgroundColor = '#3b82f6'}>
+                  <Upload size={16} /> Image
+                </div>
+                <input id="image-upload" type="file" accept=".png, .jpg, .jpeg" onChange={handleFileUpload} style={{ display: 'none' }} />
+              </label>
+
+              <label htmlFor="svg-upload" style={{ flex: 1, cursor: 'pointer' }}>
+                <div role="button" className="btn-upload" style={{
+                  backgroundColor: '#10b981', color: 'white', padding: '0.6em 0', borderRadius: '8px',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.4rem', fontWeight: 500, fontSize: '0.85rem',
+                  transition: 'background-color 0.2s'
+                }} onMouseOver={(e) => e.currentTarget.style.backgroundColor = '#059669'} onMouseOut={(e) => e.currentTarget.style.backgroundColor = '#10b981'}>
+                  <Upload size={16} /> SVG
+                </div>
+                <input id="svg-upload" type="file" accept=".svg" onChange={handleFileUpload} style={{ display: 'none' }} />
+              </label>
             </div>
-            <input
-              id="image-upload"
-              type="file"
-              accept=".png, .jpg, .jpeg"
-              onChange={handleFileUpload}
-              style={{ display: 'none' }}
-            />
-          </label>
 
-          <label htmlFor="svg-upload" style={{ flex: 1, cursor: 'pointer' }}>
-            <div role="button" className="btn-upload" style={{
-              backgroundColor: '#10b981',
-              color: 'white',
-              padding: '0.6em 0',
-              borderRadius: '8px',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              gap: '0.4rem',
-              fontWeight: 500,
-              fontSize: '0.85rem'
-            }}>
-              <Upload size={16} />
-              SVG
-            </div>
-            <input
-              id="svg-upload"
-              type="file"
-              accept=".svg"
-              onChange={handleFileUpload}
-              style={{ display: 'none' }}
-            />
-          </label>
-        </div>
+            {svgUrl && (
+              <button
+                 onClick={() => {
+                   const link = document.createElement('a');
+                   link.href = svgUrl;
+                   link.download = 'vectorized.svg';
+                   link.click();
+                 }}
+                 style={{
+                   width: '100%', padding: '0.4rem', backgroundColor: '#334155', color: 'white', border: '1px solid rgba(255,255,255,0.1)',
+                   borderRadius: '6px', cursor: 'pointer', fontSize: '0.75rem', display: 'flex', alignItems: 'center',
+                   justifyContent: 'center', gap: '0.4rem', transition: 'background-color 0.2s'
+                 }}
+                 onMouseOver={(e) => e.currentTarget.style.backgroundColor = '#475569'}
+                 onMouseOut={(e) => e.currentTarget.style.backgroundColor = '#334155'}
+              >
+                <Download size={14} /> Download 2D SVG
+              </button>
+            )}
 
-        {svgUrl && (
-          <div className="control-group" style={{ marginTop: '-0.5rem' }}>
-            <button
-               onClick={() => {
-                 const link = document.createElement('a');
-                 link.href = svgUrl;
-                 link.download = 'vectorized.svg';
-                 link.click();
-               }}
-               style={{
-                 width: '100%',
-                 padding: '0.4rem',
-                 backgroundColor: '#334155',
-                 color: 'white',
-                 border: '1px solid #475569',
-                 borderRadius: '4px',
-                 cursor: 'pointer',
-                 fontSize: '0.75rem',
-                 display: 'flex',
-                 alignItems: 'center',
-                 justifyContent: 'center',
-                 gap: '0.25rem',
-                 transition: 'background-color 0.2s'
-               }}
-               onMouseOver={(e) => e.currentTarget.style.backgroundColor = '#475569'}
-               onMouseOut={(e) => e.currentTarget.style.backgroundColor = '#334155'}
-            >
-              <Download size={14} />
-              Download 2D SVG
-            </button>
-          </div>
-        )}
+            {imageDataUrl && (
+              <div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', color: '#94a3b8', marginBottom: '0.25rem' }}>
+                  <label htmlFor="color-count">Image Colors To Extract</label>
+                  <span>{colorCount}</span>
+                </div>
+                <input id="color-count" type="range" min="2" max="32" step="1" value={colorCount} onChange={handleColorCountChange} />
+              </div>
+            )}
 
-        {imageDataUrl && (
-          <div className="control-group" style={{ marginTop: '0.5rem' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', color: '#94a3b8', marginBottom: '0.25rem' }}>
-              <label htmlFor="color-count">Image Colors To Extract</label>
-              <span>{colorCount}</span>
-            </div>
-            <input
-              id="color-count"
-              type="range"
-              min="2"
-              max="32"
-              step="1"
-              value={colorCount}
-              onChange={handleColorCountChange}
-            />
-          </div>
-        )}
-
-        {vertexCount > 0 && (
-          <div className="control-group" style={{
-            backgroundColor: '#1e293b',
-            padding: '1rem',
-            borderRadius: '8px',
-            border: '1px solid #334155'
-          }}>
-            <label style={{ fontSize: '0.8rem', color: '#94a3b8' }}>Model Complexity</label>
-            <div style={{ fontSize: '1.25rem', fontWeight: 600, color: '#e2e8f0', marginTop: '0.25rem' }}>
-              {vertexCount.toLocaleString()} Vertices
-            </div>
-            {vertexCount > 100000 && (
-              <div style={{ fontSize: '0.75rem', color: '#ef4444', marginTop: '0.5rem' }}>
-                High vertex count may cause performance issues.
+            {vertexCount > 0 && (
+              <div style={{ padding: '0.75rem', borderRadius: '6px', backgroundColor: 'rgba(0,0,0,0.2)', border: '1px solid rgba(255,255,255,0.05)' }}>
+                <div style={{ fontSize: '0.75rem', color: '#94a3b8' }}>Model Complexity</div>
+                <div style={{ fontSize: '1rem', fontWeight: 600, color: '#e2e8f0', marginTop: '0.25rem' }}>{vertexCount.toLocaleString()} Vertices</div>
+                {vertexCount > 100000 && (
+                  <div style={{ fontSize: '0.7rem', color: '#ef4444', marginTop: '0.25rem' }}>High vertex count may cause performance issues.</div>
+                )}
               </div>
             )}
           </div>
-        )}
+        </div>
 
-        <div className="control-group">
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
-            <label htmlFor="depth-slider" style={{ margin: 0 }}>
-              Extrusion Depth: {currentDepth.toFixed(1)}
+        {/* GROUP 2: GEOMETRY SETTINGS */}
+        <div className="card">
+          <div className="card-header">Geometry Settings</div>
+          <div className="card-body" style={{ gap: '0.5rem' }}>
+            <label className="checkbox-label" htmlFor="seal-gaps">
+              <input id="seal-gaps" type="checkbox" checked={sealGaps} onChange={(e) => setSealGaps(e.target.checked)} />
+              Seal gaps (adds slight bevel)
             </label>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+              <label className="checkbox-label" htmlFor="cut-overlaps" style={{ cursor: svgUrl ? 'not-allowed' : 'pointer', opacity: svgUrl ? 0.5 : 1 }}>
+                <input id="cut-overlaps" type="checkbox" checked={cutOverlaps} onChange={(e) => setCutOverlaps(e.target.checked)} disabled={!!svgUrl} />
+                Cut overlaps (puzzle pieces)
+              </label>
+              {svgUrl && (
+                <span style={{ fontSize: '0.65rem', color: '#ef4444', paddingLeft: '1.5rem' }}>
+                  Must be set before uploading SVG.
+                </span>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* GROUP 3: SELECTION & EDITING */}
+        <div className="card">
+          <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            Selection & Editing
             <button
               onClick={handleUndo}
               disabled={history.length === 0}
               style={{
-                padding: '0.2rem 0.5rem',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '0.25rem',
-                fontSize: '0.75rem',
-                backgroundColor: history.length > 0 ? '#3b82f6' : '#334155',
-                color: history.length > 0 ? 'white' : '#94a3b8',
-                border: 'none',
-                borderRadius: '4px',
-                cursor: history.length > 0 ? 'pointer' : 'not-allowed'
+                padding: '0.2rem 0.5rem', display: 'flex', alignItems: 'center', gap: '0.25rem', fontSize: '0.7rem',
+                backgroundColor: history.length > 0 ? '#3b82f6' : 'transparent',
+                color: history.length > 0 ? 'white' : '#64748b',
+                border: history.length > 0 ? 'none' : '1px solid rgba(255,255,255,0.1)',
+                borderRadius: '4px', cursor: history.length > 0 ? 'pointer' : 'not-allowed'
               }}
-              title="Undo depth change (Ctrl+Z)"
+              title="Undo last change (Ctrl+Z)"
             >
-              <Undo size={12} />
-              Undo
+              <Undo size={10} /> Undo
             </button>
           </div>
-          <input
-            id="depth-slider"
-            type="range"
-            min="0"
-            max="20"
-            step="0.1"
-            value={currentDepth}
-            onPointerDown={() => {
-              setHistory(prev => [...prev, meshDepths]);
-            }}
-            onChange={handleDepthChange}
-            disabled={selectedMeshIds.length === 0}
-          />
-        </div>
-
-        <div className="control-group" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-          <input
-            id="select-by-color"
-            type="checkbox"
-            checked={selectByColor}
-            onChange={(e) => setSelectByColor(e.target.checked)}
-          />
-          <label htmlFor="select-by-color" style={{ cursor: 'pointer' }}>
-            Select matching colors
-          </label>
-        </div>
-
-        <div className="control-group" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '-0.5rem' }}>
-          <input
-            id="seal-gaps"
-            type="checkbox"
-            checked={sealGaps}
-            onChange={(e) => setSealGaps(e.target.checked)}
-          />
-          <label htmlFor="seal-gaps" style={{ cursor: 'pointer' }}>
-            Seal gaps (adds slight bevel)
-          </label>
-        </div>
-
-        <div className="control-group" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '-0.5rem' }}>
-          <input
-            id="cut-overlaps"
-            type="checkbox"
-            checked={cutOverlaps}
-            onChange={(e) => setCutOverlaps(e.target.checked)}
-          />
-          <label htmlFor="cut-overlaps" style={{ cursor: 'pointer' }}>
-            Cut overlaps (puzzle pieces)
-          </label>
-        </div>
-
-        {uniqueColors.length > 0 && (
-          <div className="control-group" style={{ marginTop: '0.5rem' }}>
-            <label style={{ fontSize: '0.8rem', color: '#94a3b8', display: 'block', marginBottom: '0.5rem' }}>
-              Colors Used <span style={{ fontSize: '0.65rem', color: '#64748b', fontWeight: 'normal', float: 'right' }}>(Drag corner to expand)</span>
-            </label>
-            <div className="colors-scroll-container" style={{
-              display: 'flex', flexWrap: 'wrap', gap: '0.5rem',
-              height: '160px', minHeight: '80px', maxHeight: '60vh', overflowY: 'auto', alignContent: 'flex-start',
-              paddingRight: '4px', resize: 'vertical', border: '1px solid #1e293b'
-            }}>
-              {uniqueColors.map(colorHex => {
-                const idsOfColor = currentMeshColors.filter(m => m.colorHex === colorHex).map(m => m.id);
-                const isAllSelected = idsOfColor.length > 0 && idsOfColor.every(id => selectedMeshIds.includes(id));
-                const isPartiallySelected = !isAllSelected && idsOfColor.some(id => selectedMeshIds.includes(id));
-
-                return (
-                  <div
-                    key={colorHex}
-                    onClick={() => toggleColorSelection(colorHex)}
-                    style={{
-                      width: '24px',
-                      height: '24px',
-                      backgroundColor: `#${colorHex}`,
-                      borderRadius: '4px',
-                      cursor: 'pointer',
-                      border: isAllSelected ? '2px solid #fff' : isPartiallySelected ? '2px solid #60a5fa' : '1px solid #334155',
-                      boxShadow: (isAllSelected || isPartiallySelected) ? '0 0 0 1px #3b82f6' : 'none',
-                      position: 'relative',
-                      boxSizing: 'border-box'
-                    }}
-                    title={`#${colorHex}`}
-                  >
-                    {isAllSelected && (
-                      <div style={{
-                        position: 'absolute', top: '-6px', right: '-6px',
-                        background: '#3b82f6', color: 'white', borderRadius: '50%',
-                        width: '14px', height: '14px', display: 'flex', alignItems: 'center', justifyContent: 'center',
-                        fontSize: '9px', fontWeight: 'bold'
-                      }}>
-                        ✓
-                      </div>
-                    )}
-                    {isPartiallySelected && (
-                      <div style={{
-                        position: 'absolute', top: '-6px', right: '-6px',
-                        background: '#64748b', color: 'white', borderRadius: '50%',
-                        width: '14px', height: '14px', display: 'flex', alignItems: 'center', justifyContent: 'center',
-                        fontSize: '12px', fontWeight: 'bold', lineHeight: 1
-                      }}>
-                        -
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
+          <div className="card-body" style={{ gap: '1.25rem' }}>
+            
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+              <label className="checkbox-label" htmlFor="select-by-color">
+                <input id="select-by-color" type="checkbox" checked={selectByColor} onChange={(e) => setSelectByColor(e.target.checked)} />
+                Select identical colors
+              </label>
+              <div style={{ fontSize: '0.75rem', display: 'flex', flexDirection: 'column', gap: '0.4rem', paddingLeft: '1.75rem' }}>
+                <span style={{ color: '#94a3b8' }}>Highlight Style:</span>
+                <label className="checkbox-label" style={{ fontSize: '0.75rem', margin: 0 }}>
+                  <input type="radio" name="highlightStyle" checked={highlightStyle === 'dashed'} onChange={() => setHighlightStyle('dashed')} /> Dashed Outline
+                </label>
+                <label className="checkbox-label" style={{ fontSize: '0.75rem', margin: 0 }}>
+                  <input type="radio" name="highlightStyle" checked={highlightStyle === 'solid'} onChange={() => setHighlightStyle('solid')} /> Striped Overlay
+                </label>
+              </div>
             </div>
 
-            {selectedUniqueColors.length === 1 && !isMerging && (
-              <button
-                onClick={handleAutoSelectSimilar}
-                style={{ marginTop: '0.5rem', fontSize: '0.8rem', padding: '0.4rem', backgroundColor: '#10b981' }}
-              >
-                Auto-Select Similar
-              </button>
-            )}
+            <div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                <label htmlFor="depth-slider" style={{ fontSize: '0.85rem', color: '#94a3b8', margin: 0 }}>Extrusion Depth</label>
+                <span style={{ fontSize: '0.85rem', fontWeight: 600 }}>{currentDepth.toFixed(1)}</span>
+              </div>
+              <input id="depth-slider" type="range" min="0" max="20" step="0.1" value={currentDepth} onChange={handleDepthChange} disabled={selectedMeshIds.length === 0} />
+            </div>
 
-            {selectedUniqueColors.length > 1 && !isMerging && (
-              <button
-                onClick={() => setIsMerging(true)}
-                style={{ marginTop: '0.5rem', fontSize: '0.8rem', padding: '0.4rem', backgroundColor: '#8b5cf6', width: '100%' }}
-              >
-                Merge Selected Colors
-              </button>
-            )}
+            {uniqueColors.length > 0 && (
+              <div>
+                <label style={{ fontSize: '0.8rem', color: '#94a3b8', display: 'block', marginBottom: '0.5rem' }}>
+                  Colors Used <span style={{ fontSize: '0.65rem', color: '#64748b', fontWeight: 'normal', float: 'right' }}>(Drag to expand)</span>
+                </label>
+                <div className="colors-scroll-container" style={{
+                  display: 'flex', flexWrap: 'wrap', gap: '0.5rem', height: '140px', minHeight: '60px', maxHeight: '40vh',
+                  overflowY: 'auto', alignContent: 'flex-start', padding: '0.5rem', resize: 'vertical',
+                  border: '1px solid rgba(255,255,255,0.1)', borderRadius: '6px', backgroundColor: 'rgba(0,0,0,0.2)'
+                }}>
+                  {uniqueColors.map(colorHex => {
+                    const idsOfColor = currentMeshColors.filter(m => m.colorHex === colorHex).map(m => m.id);
+                    const isAllSelected = idsOfColor.length > 0 && idsOfColor.every(id => selectedMeshIds.includes(id));
+                    const isPartiallySelected = !isAllSelected && idsOfColor.some(id => selectedMeshIds.includes(id));
 
-            {selectedMeshIds.length > 1 && !isMerging && (
-              <button
-                onClick={handleFuseParts}
-                style={{ marginTop: '0.5rem', fontSize: '0.8rem', padding: '0.4rem', backgroundColor: '#f97316', width: '100%' }}
-                title="Mathematically fuse touching parts into a single seamless polygon"
-              >
-                Fuse Touching Parts
-              </button>
-            )}
-
-            {isMerging && (
-              <div style={{ marginTop: '0.5rem', backgroundColor: '#334155', padding: '0.5rem', borderRadius: '4px' }}>
-                <div style={{ fontSize: '0.75rem', marginBottom: '0.5rem', color: '#cbd5e1' }}>Select target color:</div>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.75rem', padding: '0.25rem 0' }}>
-                  {selectedUniqueColors.map(colorHex => (
-                    <div key={`target-${colorHex}`} style={{ position: 'relative' }}>
+                    return (
                       <div
-                        onClick={() => handleMergeColors(colorHex)}
+                        key={colorHex}
+                        onClick={() => toggleColorSelection(colorHex)}
                         style={{
-                          width: '32px', height: '32px', backgroundColor: `#${colorHex}`,
-                          borderRadius: '50%', cursor: 'pointer', border: '2px solid #475569',
-                          boxShadow: '0 2px 4px rgba(0,0,0,0.2)', transition: 'transform 0.1s'
+                          width: '28px', height: '28px', backgroundColor: `#${colorHex}`, borderRadius: '6px',
+                          cursor: 'pointer', border: isAllSelected ? '2px solid #fff' : isPartiallySelected ? '2px solid #60a5fa' : '1px solid rgba(255,255,255,0.2)',
+                          boxShadow: (isAllSelected || isPartiallySelected) ? '0 0 0 2px rgba(59,130,246,0.5)' : 'none',
+                          position: 'relative', boxSizing: 'border-box', transition: 'transform 0.1s'
                         }}
                         onMouseEnter={(e) => e.currentTarget.style.transform = 'scale(1.1)'}
                         onMouseLeave={(e) => e.currentTarget.style.transform = 'scale(1)'}
-                        title={`Merge into #${colorHex}`}
-                      />
-                      <div
-                        onClick={(e) => { e.stopPropagation(); removeColorFromSelection(colorHex); }}
-                        style={{
-                          position: 'absolute', top: '-4px', right: '-4px',
-                          width: '16px', height: '16px', backgroundColor: '#ef4444',
-                          color: 'white', borderRadius: '50%', display: 'flex',
-                          alignItems: 'center', justifyContent: 'center', fontSize: '10px',
-                          fontWeight: 'bold', cursor: 'pointer', border: '1px solid #1e293b',
-                          boxShadow: '0 1px 2px rgba(0,0,0,0.3)'
-                        }}
-                        title="Remove color from selection"
+                        title={`#${colorHex}`}
                       >
-                        ✕
+                        {isAllSelected && (
+                          <div style={{
+                            position: 'absolute', top: '-6px', right: '-6px', background: '#3b82f6', color: 'white',
+                            borderRadius: '50%', width: '14px', height: '14px', display: 'flex', alignItems: 'center',
+                            justifyContent: 'center', fontSize: '9px', fontWeight: 'bold'
+                          }}>✓</div>
+                        )}
+                        {isPartiallySelected && (
+                          <div style={{
+                            position: 'absolute', top: '-6px', right: '-6px', background: '#64748b', color: 'white',
+                            borderRadius: '50%', width: '14px', height: '14px', display: 'flex', alignItems: 'center',
+                            justifyContent: 'center', fontSize: '12px', fontWeight: 'bold', lineHeight: 1
+                          }}>-</div>
+                        )}
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
 
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginTop: '0.75rem' }}>
+                  {selectedUniqueColors.length === 1 && !isMerging && (
+                    <button onClick={handleAutoSelectSimilar} style={{ fontSize: '0.75rem', padding: '0.5rem', backgroundColor: '#10b981' }}>
+                      Auto-Select Similar Colors
+                    </button>
+                  )}
 
+                  {selectedUniqueColors.length > 1 && !isMerging && (
+                    <button onClick={() => setIsMerging(true)} style={{ fontSize: '0.75rem', padding: '0.5rem', backgroundColor: '#8b5cf6' }}>
+                      Merge Selected Colors
+                    </button>
+                  )}
 
-                <button
-                  onClick={() => setIsMerging(false)}
-                  style={{ marginTop: '0.5rem', fontSize: '0.7rem', padding: '0.2rem 0.5rem', backgroundColor: 'transparent', border: '1px solid #64748b' }}
-                >
-                  Cancel
-                </button>
+                  {selectedMeshIds.length > 1 && !isMerging && (
+                    <button onClick={handleFuseParts} style={{ fontSize: '0.75rem', padding: '0.5rem', backgroundColor: '#f97316' }} title="Mathematically fuse touching parts into a single seamless polygon">
+                      Fuse Touching Parts
+                    </button>
+                  )}
+                </div>
+
+                {isMerging && (
+                  <div style={{ marginTop: '0.75rem', backgroundColor: 'rgba(51,65,85,0.5)', padding: '0.75rem', borderRadius: '6px', border: '1px solid rgba(255,255,255,0.05)' }}>
+                    <div style={{ fontSize: '0.75rem', marginBottom: '0.75rem', color: '#cbd5e1' }}>Select target color to merge into:</div>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.75rem' }}>
+                      {selectedUniqueColors.map(colorHex => (
+                        <div key={`target-${colorHex}`} style={{ position: 'relative' }}>
+                          <div
+                            onClick={() => handleMergeColors(colorHex)}
+                            style={{
+                              width: '32px', height: '32px', backgroundColor: `#${colorHex}`, borderRadius: '50%',
+                              cursor: 'pointer', border: '2px solid rgba(255,255,255,0.2)', transition: 'transform 0.1s'
+                            }}
+                            onMouseEnter={(e) => e.currentTarget.style.transform = 'scale(1.1)'}
+                            onMouseLeave={(e) => e.currentTarget.style.transform = 'scale(1)'}
+                            title={`Merge into #${colorHex}`}
+                          />
+                          <div
+                            onClick={(e) => { e.stopPropagation(); removeColorFromSelection(colorHex); }}
+                            style={{
+                              position: 'absolute', top: '-4px', right: '-4px', width: '16px', height: '16px',
+                              backgroundColor: '#ef4444', color: 'white', borderRadius: '50%', display: 'flex',
+                              alignItems: 'center', justifyContent: 'center', fontSize: '10px', fontWeight: 'bold',
+                              cursor: 'pointer', border: '1px solid #1e293b'
+                            }}
+                            title="Remove color from selection"
+                          >✕</div>
+                        </div>
+                      ))}
+                    </div>
+                    <button onClick={() => setIsMerging(false)} style={{ marginTop: '0.75rem', fontSize: '0.7rem', padding: '0.3rem 0.5rem', backgroundColor: 'transparent', border: '1px solid #64748b', width: '100%' }}>
+                      Cancel Merge
+                    </button>
+                  </div>
+                )}
               </div>
             )}
           </div>
-        )}
+        </div>
 
-        <div style={{ marginTop: 'auto' }}>
-          <div className="control-group">
-            <h3 style={{ fontSize: '0.85rem', marginBottom: '0.5rem', color: '#94a3b8' }}>3D PRINT SETTINGS</h3>
-            <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.5rem' }}>
+        {/* GROUP 4: EXPORT OPTIONS */}
+        <div className="card" style={{ marginTop: 'auto' }}>
+          <div className="card-header">Export & Print Options</div>
+          <div className="card-body">
+            
+            <div style={{ display: 'flex', gap: '0.5rem' }}>
               <div style={{ flex: 1 }}>
-                <label className="checkbox-label" style={{ fontSize: '0.75rem' }}>Printer Profile</label>
-                <select
-                  value={printerProfile}
-                  onChange={(e) => setPrinterProfile(e.target.value as 'A1 Mini (180x180)' | 'X1/P1/A1 (256x256)')}
-                  style={{ width: '100%', padding: '4px', borderRadius: '4px', border: '1px solid #334155', background: '#0f172a', color: 'white' }}
+                <label className="checkbox-label" style={{ fontSize: '0.75rem', marginBottom: '0.25rem' }}>Printer Profile</label>
+                <select value={printerProfile} onChange={(e) => setPrinterProfile(e.target.value as any)}
+                  style={{ width: '100%', padding: '0.4rem', borderRadius: '4px', border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(0,0,0,0.2)', color: 'white', fontSize: '0.75rem' }}
                 >
                   <option value="A1 Mini (180x180)">A1 Mini (180x180)</option>
-                  <option value="X1/P1/A1 (256x256)">X1 / P1 / A1 (256x256)</option>
+                  <option value="X1/P1/A1 (256x256)">X1/P1/A1 (256x256)</option>
                 </select>
               </div>
               <div style={{ flex: 1 }}>
-                <label className="checkbox-label" style={{ fontSize: '0.75rem' }}>Export Size & Layout</label>
-                <select
-                  value={gridSize}
-                  onChange={(e) => setGridSize(e.target.value)}
-                  style={{ width: '100%', padding: '4px', borderRadius: '4px', border: '1px solid #334155', background: '#0f172a', color: 'white' }}
+                <label className="checkbox-label" style={{ fontSize: '0.75rem', marginBottom: '0.25rem' }}>Export Layout</label>
+                <select value={gridSize} onChange={(e) => setGridSize(e.target.value)}
+                  style={{ width: '100%', padding: '0.4rem', borderRadius: '4px', border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(0,0,0,0.2)', color: 'white', fontSize: '0.75rem' }}
                 >
-                  <option value="auto">Original Size (Auto-Grid, Max 2x2)</option>
-                  <option value="1x1">Scale to Fit: 1x1 Plate</option>
-                  <option value="2x2">Scale to Fit: 2x2 Plates</option>
-                  <option value="1x2">Scale to Fit: 1x2 (Vertical)</option>
-                  <option value="2x1">Scale to Fit: 2x1 (Horizontal)</option>
+                  <option value="auto">Auto (Max 2x2)</option>
+                  <option value="1x1">1x1 Plate</option>
+                  <option value="2x2">2x2 Plates</option>
+                  <option value="1x2">1x2 (Vertical)</option>
+                  <option value="2x1">2x1 (Horizontal)</option>
                 </select>
               </div>
             </div>
 
             {gridSize === 'auto' && (
-              <div style={{ marginBottom: '1rem' }}>
-                <label className="checkbox-label" style={{ fontSize: '0.75rem' }}>Scale Multiplier (%)</label>
+              <div>
+                <label className="checkbox-label" style={{ fontSize: '0.75rem', marginBottom: '0.25rem' }}>Scale Multiplier (%)</label>
                 <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-                  <input
-                    type="range"
-                    min="10"
-                    max="500"
-                    step="10"
-                    value={customScale}
-                    onChange={(e) => setCustomScale(Number(e.target.value))}
-                    style={{ flex: 1 }}
-                  />
-                  <span style={{ fontSize: '0.75rem', width: '40px', color: 'white' }}>{customScale}%</span>
+                  <input type="range" min="10" max="500" step="10" value={customScale} onChange={(e) => setCustomScale(Number(e.target.value))} style={{ flex: 1 }} />
+                  <span style={{ fontSize: '0.75rem', width: '40px', color: 'white', textAlign: 'right' }}>{customScale}%</span>
                 </div>
+                <label className="checkbox-label" style={{ marginTop: '0.5rem', fontSize: '0.75rem' }}>
+                  <input type="checkbox" checked={scaleZProportionally} onChange={(e) => setScaleZProportionally(e.target.checked)} />
+                  Scale Depth Proportionally
+                </label>
               </div>
             )}
 
-            {!mergeColors3MF && (
-              <div style={{ marginBottom: '1rem' }}>
-                <label className="checkbox-label" style={{ fontSize: '0.75rem' }}>Assembly Clearance (mm)</label>
-                <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-                  <input
-                    type="range"
-                    min="0"
-                    max="0.5"
-                    step="0.05"
-                    value={clearance}
-                    onChange={(e) => setClearance(Number(e.target.value))}
-                    style={{ flex: 1 }}
-                  />
-                  <span style={{ fontSize: '0.75rem', width: '40px', color: 'white' }}>{clearance.toFixed(2)}</span>
-                </div>
-              </div>
-            )}
-
-            <button
-              disabled={!svgUrl || !!exportStatus}
-              style={{ width: '100%', marginBottom: '0.5rem', backgroundColor: '#ec4899' }}
-              onClick={handleExport3MF}
-            >
-              <Download size={18} />
-              Export 3MF (Multi-Plate)
-            </button>
-
-            {/* Toolbar Items */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginBottom: '1rem' }}>
-              <label className="checkbox-label" style={{ fontSize: '0.75rem', margin: 0 }}>
-                <input
-                  type="checkbox"
-                  checked={selectByColor}
-                  onChange={(e) => setSelectByColor(e.target.checked)}
-                />
-                Select identical colors simultaneously
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+              <label className="checkbox-label" style={{ fontSize: '0.75rem' }}>
+                <input type="checkbox" checked={mergeColors3MF} onChange={(e) => setMergeColors3MF(e.target.checked)} />
+                Join objects by color for 3MF
               </label>
+              
+              {!mergeColors3MF && (
+                <div style={{ paddingLeft: '1.5rem', marginTop: '-0.25rem', marginBottom: '0.25rem' }}>
+                  <label className="checkbox-label" style={{ fontSize: '0.75rem', marginBottom: '0.25rem', color: '#94a3b8' }}>Assembly Clearance (mm)</label>
+                  <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                    <input type="range" min="0" max="0.5" step="0.05" value={clearance} onChange={(e) => setClearance(Number(e.target.value))} style={{ flex: 1 }} />
+                    <span style={{ fontSize: '0.75rem', width: '30px', color: 'white', textAlign: 'right' }}>{clearance.toFixed(2)}</span>
+                  </div>
+                </div>
+              )}
 
-              <div style={{ fontSize: '0.75rem', display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
-                <span>Selection Highlight Style:</span>
-                <label className="checkbox-label" style={{ fontSize: '0.75rem', margin: 0, marginLeft: '0.5rem' }}>
-                  <input
-                    type="radio"
-                    name="highlightStyle"
-                    checked={highlightStyle === 'dashed'}
-                    onChange={() => setHighlightStyle('dashed')}
-                  />
-                  Dashed Outline
-                </label>
-                <label className="checkbox-label" style={{ fontSize: '0.75rem', margin: 0, marginLeft: '0.5rem' }}>
-                  <input
-                    type="radio"
-                    name="highlightStyle"
-                    checked={highlightStyle === 'solid'}
-                    onChange={() => setHighlightStyle('solid')}
-                  />
-                  Striped Overlay
-                </label>
-              </div>
+              <label className="checkbox-label" style={{ fontSize: '0.75rem' }}>
+                <input type="checkbox" checked={mergeBeforeExport} onChange={(e) => setMergeBeforeExport(e.target.checked)} />
+                Join objects for GLTF (Single Mesh)
+              </label>
             </div>
 
-            <label className="checkbox-label" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', marginBottom: '0.5rem' }}>
-              <input
-                type="checkbox"
-                checked={mergeColors3MF}
-                onChange={(e) => setMergeColors3MF(e.target.checked)}
-              />
-              Join objects by color for 3MF
-            </label>
-
-            <label className="checkbox-label" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', marginBottom: '0.5rem' }}>
-              <input
-                type="checkbox"
-                checked={mergeBeforeExport}
-                onChange={(e) => setMergeBeforeExport(e.target.checked)}
-              />
-              Join objects for GLTF (Single Mesh)
-            </label>
-
-            <button
-              disabled={!svgUrl}
-              style={{ width: '100%', backgroundColor: '#475569' }}
-              onClick={handleExport}
-            >
-              <Download size={18} />
-              Export GLTF (Raw)
-            </button>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginTop: '0.5rem' }}>
+              <button disabled={!svgUrl || !!exportStatus} style={{ width: '100%', backgroundColor: '#ec4899' }} onClick={handleExport3MF}>
+                <Download size={16} /> Export 3MF (Multi-Plate)
+              </button>
+              <button disabled={!svgUrl} style={{ width: '100%', backgroundColor: '#475569', fontSize: '0.8rem', padding: '0.5rem' }} onClick={handleExport}>
+                <Download size={14} /> Export GLTF (Raw)
+              </button>
+            </div>
           </div>
         </div>
       </div>

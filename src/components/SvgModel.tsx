@@ -85,7 +85,9 @@ export interface SvgModelProps {
 
 export interface SvgModelRef {
   fuseSelected: (idsToFuse: string[], onProgress: (msg: string) => void) => Promise<string | null>;
-  sliceAndExport: (buildPlateSize: number, gridSize: string, printerModel: string, mergeByColor: boolean, customScale: number, clearance: number, onProgress: (msg: string) => void) => Promise<Blob | null>;
+  sliceAndExport: (buildPlateSize: number, gridSize: string, printerModel: string, mergeByColor: boolean, customScale: number, clearance: number, scaleZProportionally: boolean, onProgress: (msg: string) => void) => Promise<Blob | null>;
+  getShapes: () => { id: string; color: THREE.Color; colorHex: string; shapes: THREE.Shape[] }[];
+  setShapes: (shapes: { id: string; color: THREE.Color; colorHex: string; shapes: THREE.Shape[] }[]) => void;
 }
 
 const DashedEdges = ({ shapes, color, depth }: { shapes: THREE.Shape[], color: string, depth: number }) => {
@@ -167,6 +169,8 @@ export const SvgModel = React.forwardRef<SvgModelRef, SvgModelProps>(({
   const [shapesWithColors, setShapesWithColors] = React.useState<{ id: string; color: THREE.Color; colorHex: string; shapes: THREE.Shape[] }[]>([]);
 
   React.useImperativeHandle(ref, () => ({
+    getShapes: () => shapesWithColors,
+    setShapes: (newShapes) => setShapesWithColors(newShapes),
     fuseSelected: async (idsToFuse: string[], onProgress: (msg: string) => void) => {
       const itemsToFuse = shapesWithColors.filter(item => idsToFuse.includes(item.id) && item.shapes.length > 0);
       if (itemsToFuse.length === 0) return null;
@@ -255,7 +259,7 @@ export const SvgModel = React.forwardRef<SvgModelRef, SvgModelProps>(({
       return newId;
     },
 
-    sliceAndExport: async (buildPlateSize: number, gridSize: string, printerModel: string, mergeByColor: boolean, customScale: number, clearance: number, onProgress: (msg: string) => void) => {
+    sliceAndExport: async (buildPlateSize: number, gridSize: string, printerModel: string, mergeByColor: boolean, customScale: number, clearance: number, scaleZProportionally: boolean, onProgress: (msg: string) => void) => {
       if (shapesWithColors.length === 0) return null;
 
       onProgress("Analyzing model dimensions...");
@@ -463,7 +467,7 @@ export const SvgModel = React.forwardRef<SvgModelRef, SvgModelProps>(({
               const matrix = new THREE.Matrix4().makeScale(
                 0.1 * scaleFactor,
                 -0.1 * scaleFactor,
-                0.1
+                scaleZProportionally ? 0.1 * scaleFactor : 0.1
               );
               geom.applyMatrix4(matrix);
 
@@ -896,6 +900,7 @@ export const SvgModel = React.forwardRef<SvgModelRef, SvgModelProps>(({
               <shapeGeometry args={[item.shapes]} />
             ) : (
               <extrudeGeometry
+                key={`extrude-${sealGaps}-${depth}`}
                 args={[item.shapes, {
                   depth,
                   bevelEnabled: sealGaps,
@@ -916,6 +921,7 @@ export const SvgModel = React.forwardRef<SvgModelRef, SvgModelProps>(({
                   <shapeGeometry args={[item.shapes]} />
                 ) : (
                   <extrudeGeometry
+                    key={`extrude-overlay-${sealGaps}-${depth}`}
                     args={[item.shapes, {
                       depth,
                       bevelEnabled: sealGaps,
