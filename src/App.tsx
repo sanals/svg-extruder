@@ -11,11 +11,14 @@ import './index.css';
 
 function App() {
   const [svgUrl, setSvgUrl] = useState<string | null>(null);
+  const [imageDataUrl, setImageDataUrl] = useState<string | null>(null);
+  const [colorCount, setColorCount] = useState<number>(8);
   const [selectedMeshIds, setSelectedMeshIds] = useState<string[]>([]);
   const [meshDepths, setMeshDepths] = useState<Record<string, number>>({});
   const [vertexCount, setVertexCount] = useState<number>(0);
   const [isTracing, setIsTracing] = useState<string | null>(null);
   const [selectByColor, setSelectByColor] = useState<boolean>(false);
+  const [highlightStyle, setHighlightStyle] = useState<'dashed' | 'solid'>('dashed');
   const [sealGaps, setSealGaps] = useState<boolean>(true);
   const [cutOverlaps, setCutOverlaps] = useState<boolean>(true);
   const [mergeBeforeExport, setMergeBeforeExport] = useState<boolean>(false);
@@ -24,7 +27,6 @@ function App() {
   const [meshColorOverrides, setMeshColorOverrides] = useState<Record<string, string>>({});
   const [mergeColors3MF, setMergeColors3MF] = useState<boolean>(true);
   const [isMerging, setIsMerging] = useState(false);
-  const [mergeMatching, setMergeMatching] = useState(true);
   const [fuseStatus, setFuseStatus] = useState<string | null>(null);
 
   const [printerProfile, setPrinterProfile] = useState<'A1 Mini (180x180)' | 'X1/P1/A1 (256x256)'>('X1/P1/A1 (256x256)');
@@ -37,6 +39,7 @@ function App() {
 
   const sceneRef = useRef<THREE.Group>(null);
   const svgModelRef = useRef<SvgModelRef>(null);
+  const colorChangeTimeout = useRef<number | null>(null);
 
   const currentMeshColors = meshColors.map(m => ({
     id: m.id,
@@ -107,18 +110,6 @@ function App() {
   const handleMergeColors = (targetColorHex: string) => {
     let idsToUpdate = selectedMeshIds;
 
-    if (mergeMatching) {
-      // Find all unique colors represented in the current selection
-      const colorsToMerge = Array.from(new Set(
-        selectedMeshIds.map(id => currentMeshColors.find(m => m.id === id)?.colorHex).filter(Boolean) as string[]
-      ));
-
-      // Find ALL meshes in the entire model that share those colors
-      idsToUpdate = currentMeshColors
-        .filter(m => colorsToMerge.includes(m.colorHex))
-        .map(m => m.id);
-    }
-
     setMeshColorOverrides(prev => {
       const next = { ...prev };
       idsToUpdate.forEach(id => {
@@ -188,6 +179,39 @@ function App() {
     }
   };
 
+  const traceImage = (dataUrl: string, colors: number) => {
+    setIsTracing("Step 2/3: Vectorizing Pixels to SVG...");
+    setTimeout(() => {
+      ImageTracer.imageToSVG(
+        dataUrl,
+        (svgStr: string) => {
+          const blob = new Blob([svgStr], { type: 'image/svg+xml' });
+          const svgBlobUrl = URL.createObjectURL(blob);
+
+          setIsTracing("Step 3/3: Parsing 2D Geometry...");
+          setSvgUrl(svgBlobUrl);
+          setSelectedMeshIds([]);
+          setMeshDepths({});
+          setVertexCount(0);
+          setHistory([]);
+          setMeshColors([]);
+          setMeshColorOverrides({});
+          setIsMerging(false);
+          setImageDataUrl(dataUrl);
+        },
+        {
+          numberofcolors: colors,
+          colorquantcycles: 15, // Increased from default 3 to improve k-means convergence and consistency
+          mincolorratio: 0.005, // Lowered from 0.02 (2%) to 0.5% so small details (like stripes) aren't discarded as "noise" when colors increase
+          strokewidth: 0,
+          viewbox: true,
+          blurradius: 2,
+          blurdelta: 20
+        }
+      );
+    }, 50);
+  };
+
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
@@ -198,6 +222,7 @@ function App() {
         // Yield to allow React to paint the loading screen before blocking the thread
         setTimeout(() => {
           setSvgUrl(url);
+          setImageDataUrl(null);
           setSelectedMeshIds([]);
           setMeshDepths({});
           setVertexCount(0); // Reset vertices
@@ -232,34 +257,7 @@ function App() {
             if (ctx) {
               ctx.drawImage(img, 0, 0, width, height);
               const dataUrl = canvas.toDataURL("image/png");
-
-              setIsTracing("Step 2/3: Vectorizing Pixels to SVG...");
-              setTimeout(() => {
-                ImageTracer.imageToSVG(
-                  dataUrl,
-                  (svgStr: string) => {
-                    const blob = new Blob([svgStr], { type: 'image/svg+xml' });
-                    const svgBlobUrl = URL.createObjectURL(blob);
-
-                    setIsTracing("Step 3/3: Parsing 2D Geometry...");
-                    setSvgUrl(svgBlobUrl);
-                    setSelectedMeshIds([]);
-                    setMeshDepths({});
-                    setVertexCount(0);
-                    setHistory([]);
-                    setMeshColors([]);
-                    setMeshColorOverrides({});
-                    setIsMerging(false);
-                  },
-                  {
-                    numberofcolors: 8, // Reduced from 16 to keep geometry simpler
-                    strokewidth: 0,
-                    viewbox: true,
-                    blurradius: 2, // Blur to remove noise which creates thousands of tiny polygons
-                    blurdelta: 20
-                  }
-                );
-              }, 50);
+              traceImage(dataUrl, colorCount);
             }
           }, 50);
         };
@@ -279,6 +277,21 @@ function App() {
       });
       return newDepths;
     });
+  };
+
+  const handleColorCountChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const newColors = parseInt(e.target.value);
+    setColorCount(newColors);
+    
+    if (colorChangeTimeout.current) {
+      window.clearTimeout(colorChangeTimeout.current);
+    }
+    
+    colorChangeTimeout.current = window.setTimeout(() => {
+      if (imageDataUrl) {
+        traceImage(imageDataUrl, newColors);
+      }
+    }, 400);
   };
 
   const handleUndo = () => {
@@ -468,6 +481,57 @@ function App() {
             />
           </label>
         </div>
+
+        {svgUrl && (
+          <div className="control-group" style={{ marginTop: '-0.5rem' }}>
+            <button
+               onClick={() => {
+                 const link = document.createElement('a');
+                 link.href = svgUrl;
+                 link.download = 'vectorized.svg';
+                 link.click();
+               }}
+               style={{
+                 width: '100%',
+                 padding: '0.4rem',
+                 backgroundColor: '#334155',
+                 color: 'white',
+                 border: '1px solid #475569',
+                 borderRadius: '4px',
+                 cursor: 'pointer',
+                 fontSize: '0.75rem',
+                 display: 'flex',
+                 alignItems: 'center',
+                 justifyContent: 'center',
+                 gap: '0.25rem',
+                 transition: 'background-color 0.2s'
+               }}
+               onMouseOver={(e) => e.currentTarget.style.backgroundColor = '#475569'}
+               onMouseOut={(e) => e.currentTarget.style.backgroundColor = '#334155'}
+            >
+              <Download size={14} />
+              Download 2D SVG
+            </button>
+          </div>
+        )}
+
+        {imageDataUrl && (
+          <div className="control-group" style={{ marginTop: '0.5rem' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', color: '#94a3b8', marginBottom: '0.25rem' }}>
+              <label htmlFor="color-count">Image Colors To Extract</label>
+              <span>{colorCount}</span>
+            </div>
+            <input
+              id="color-count"
+              type="range"
+              min="2"
+              max="32"
+              step="1"
+              value={colorCount}
+              onChange={handleColorCountChange}
+            />
+          </div>
+        )}
 
         {vertexCount > 0 && (
           <div className="control-group" style={{
@@ -685,16 +749,7 @@ function App() {
                   ))}
                 </div>
 
-                <div style={{ marginTop: '0.5rem', marginBottom: '0.5rem' }}>
-                  <label className="checkbox-label" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', fontSize: '0.75rem', color: '#94a3b8' }}>
-                    <input
-                      type="checkbox"
-                      checked={mergeMatching}
-                      onChange={(e) => setMergeMatching(e.target.checked)}
-                    />
-                    Also merge unselected parts of these colors
-                  </label>
-                </div>
+
 
                 <button
                   onClick={() => setIsMerging(false)}
@@ -783,6 +838,40 @@ function App() {
               Export 3MF (Multi-Plate)
             </button>
 
+            {/* Toolbar Items */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginBottom: '1rem' }}>
+              <label className="checkbox-label" style={{ fontSize: '0.75rem', margin: 0 }}>
+                <input
+                  type="checkbox"
+                  checked={selectByColor}
+                  onChange={(e) => setSelectByColor(e.target.checked)}
+                />
+                Select identical colors simultaneously
+              </label>
+
+              <div style={{ fontSize: '0.75rem', display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                <span>Selection Highlight Style:</span>
+                <label className="checkbox-label" style={{ fontSize: '0.75rem', margin: 0, marginLeft: '0.5rem' }}>
+                  <input
+                    type="radio"
+                    name="highlightStyle"
+                    checked={highlightStyle === 'dashed'}
+                    onChange={() => setHighlightStyle('dashed')}
+                  />
+                  Dashed Outline
+                </label>
+                <label className="checkbox-label" style={{ fontSize: '0.75rem', margin: 0, marginLeft: '0.5rem' }}>
+                  <input
+                    type="radio"
+                    name="highlightStyle"
+                    checked={highlightStyle === 'solid'}
+                    onChange={() => setHighlightStyle('solid')}
+                  />
+                  Striped Overlay
+                </label>
+              </div>
+            </div>
+
             <label className="checkbox-label" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', marginBottom: '0.5rem' }}>
               <input
                 type="checkbox"
@@ -851,6 +940,7 @@ function App() {
                     ref={svgModelRef}
                     svgUrl={svgUrl}
                     selectByColor={selectByColor}
+                    highlightStyle={highlightStyle}
                     sealGaps={sealGaps}
                     cutOverlaps={cutOverlaps}
                     selectedMeshIds={selectedMeshIds}

@@ -71,8 +71,9 @@ function multiPolygonToShapes(multiPoly: MultiPolygon): THREE.Shape[] {
 export interface SvgModelProps {
   svgUrl: string;
   selectByColor: boolean;
-  sealGaps: boolean;
-  cutOverlaps: boolean;
+  sealGaps?: boolean;
+  cutOverlaps?: boolean;
+  highlightStyle?: 'dashed' | 'solid';
   selectedMeshIds: string[];
   meshDepths: Record<string, number>;
   meshColorOverrides: Record<string, string>;
@@ -87,8 +88,78 @@ export interface SvgModelRef {
   sliceAndExport: (buildPlateSize: number, gridSize: string, printerModel: string, mergeByColor: boolean, customScale: number, clearance: number, onProgress: (msg: string) => void) => Promise<Blob | null>;
 }
 
+const DashedEdges = ({ shapes, color, depth }: { shapes: THREE.Shape[], color: string, depth: number }) => {
+  const lineRef = React.useRef<THREE.LineSegments>(null);
+  
+  const edgesGeometry = React.useMemo(() => {
+    const points: THREE.Vector3[] = [];
+    shapes.forEach(shape => {
+      // get outer points
+      const shapePoints = shape.getPoints();
+      for (let i = 0; i < shapePoints.length; i++) {
+        const p1 = shapePoints[i];
+        const p2 = shapePoints[(i + 1) % shapePoints.length];
+        points.push(new THREE.Vector3(p1.x, p1.y, depth + 0.1));
+        points.push(new THREE.Vector3(p2.x, p2.y, depth + 0.1));
+      }
+      
+      // get hole points
+      shape.holes.forEach(hole => {
+        const holePoints = hole.getPoints();
+        for (let i = 0; i < holePoints.length; i++) {
+          const p1 = holePoints[i];
+          const p2 = holePoints[(i + 1) % holePoints.length];
+          points.push(new THREE.Vector3(p1.x, p1.y, depth + 0.1));
+          points.push(new THREE.Vector3(p2.x, p2.y, depth + 0.1));
+        }
+      });
+    });
+    
+    return new THREE.BufferGeometry().setFromPoints(points);
+  }, [shapes, depth]);
+
+  React.useLayoutEffect(() => {
+    if (lineRef.current) {
+      lineRef.current.computeLineDistances();
+    }
+  }, [edgesGeometry]);
+
+  return (
+    <lineSegments ref={lineRef} geometry={edgesGeometry}>
+      <lineDashedMaterial color={color} dashSize={0.5} gapSize={0.5} linewidth={2} depthTest={false} />
+    </lineSegments>
+  );
+};
+
+const createStripeTexture = (color: string) => {
+  const canvas = document.createElement('canvas');
+  canvas.width = 128;
+  canvas.height = 128;
+  const ctx = canvas.getContext('2d');
+  if (ctx) {
+    ctx.fillStyle = 'rgba(0,0,0,0)';
+    ctx.fillRect(0, 0, 128, 128);
+    ctx.lineWidth = 16;
+    ctx.strokeStyle = color;
+    for(let i = -128; i < 256; i += 32) {
+      ctx.beginPath();
+      ctx.moveTo(i, 0);
+      ctx.lineTo(i + 128, 128);
+      ctx.stroke();
+    }
+  }
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(0.05, 0.05);
+  return tex;
+};
+
+const whiteStripes = createStripeTexture('rgba(255,255,255,0.7)');
+const blackStripes = createStripeTexture('rgba(0,0,0,0.5)');
+
 export const SvgModel = React.forwardRef<SvgModelRef, SvgModelProps>(({
-  svgUrl, selectByColor, sealGaps, cutOverlaps, selectedMeshIds, meshDepths, meshColorOverrides = {}, onSelect, onVerticesCalculated, onParseProgress, onParseComplete
+  svgUrl, selectByColor, sealGaps, cutOverlaps, highlightStyle = 'dashed', selectedMeshIds, meshDepths, meshColorOverrides = {}, onSelect, onVerticesCalculated, onParseProgress, onParseComplete
 }, ref) => {
   const svgData = useLoader(SVGLoader, svgUrl);
   const groupRef = React.useRef<THREE.Group>(null);
@@ -787,7 +858,17 @@ export const SvgModel = React.forwardRef<SvgModelRef, SvgModelProps>(({
         const overriddenHex = meshColorOverrides[item.id];
         const baseColorHex = overriddenHex ?? item.colorHex;
         const baseColor = overriddenHex ? new THREE.Color(`#${overriddenHex}`) : item.color;
-        const color = isSelected ? "hotpink" : baseColor;
+
+        const getLuminance = (hex: string) => {
+          const rgb = parseInt(hex.replace('#', ''), 16);
+          const r = (rgb >> 16) & 0xff;
+          const g = (rgb >> 8) & 0xff;
+          const b = (rgb >> 0) & 0xff;
+          return 0.299 * r + 0.587 * g + 0.114 * b;
+        };
+        const isLight = getLuminance(baseColorHex) > 180;
+        const contrastColor = isLight ? "black" : "white";
+
         const depth = meshDepths[item.id] ?? 0;
 
         // Base offset to prevent z-fighting (still slightly useful even after boolean subtraction due to precision issues)
@@ -825,11 +906,32 @@ export const SvgModel = React.forwardRef<SvgModelRef, SvgModelProps>(({
               />
             )}
             <meshStandardMaterial
-              color={color}
+              color={baseColor}
               side={THREE.DoubleSide}
-              emissive={isSelected ? new THREE.Color("hotpink") : new THREE.Color(0x000000)}
-              emissiveIntensity={isSelected ? 0.5 : 0}
             />
+            {isSelected && highlightStyle === 'dashed' && <DashedEdges shapes={item.shapes} color={contrastColor} depth={depth} />}
+            {isSelected && highlightStyle === 'solid' && (
+              <mesh position={[0, 0, depth + 0.1]}>
+                {depth === 0 ? (
+                  <shapeGeometry args={[item.shapes]} />
+                ) : (
+                  <extrudeGeometry
+                    args={[item.shapes, {
+                      depth,
+                      bevelEnabled: sealGaps,
+                      bevelSize: sealGaps ? 0.2 : 0,
+                      bevelThickness: sealGaps ? 0.05 : 0,
+                      bevelSegments: sealGaps ? 1 : 0
+                    }]}
+                  />
+                )}
+                <meshBasicMaterial 
+                  map={contrastColor === 'white' ? whiteStripes : blackStripes} 
+                  transparent={true} 
+                  depthTest={false}
+                />
+              </mesh>
+            )}
           </mesh>
         );
       })}
