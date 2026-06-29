@@ -571,14 +571,18 @@ function App() {
                 <input id="select-by-color" type="checkbox" checked={selectByColor} onChange={(e) => setSelectByColor(e.target.checked)} />
                 Select identical colors
               </label>
-              <div style={{ fontSize: '0.75rem', display: 'flex', flexDirection: 'column', gap: '0.4rem', paddingLeft: '1.75rem' }}>
-                <span style={{ color: '#94a3b8' }}>Highlight Style:</span>
-                <label className="checkbox-label" style={{ fontSize: '0.75rem', margin: 0 }}>
-                  <input type="radio" name="highlightStyle" checked={highlightStyle === 'dashed'} onChange={() => setHighlightStyle('dashed')} /> Dashed Outline
-                </label>
-                <label className="checkbox-label" style={{ fontSize: '0.75rem', margin: 0 }}>
-                  <input type="radio" name="highlightStyle" checked={highlightStyle === 'solid'} onChange={() => setHighlightStyle('solid')} /> Striped Overlay
-                </label>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', paddingLeft: '1.75rem', marginTop: '0.25rem' }}>
+                <span style={{ fontSize: '0.75rem', color: '#94a3b8', marginBottom: '0.2rem' }}>Highlight Style:</span>
+                <div className="segmented-control">
+                  <label>
+                    <input type="radio" name="highlightStyle" checked={highlightStyle === 'dashed'} onChange={() => setHighlightStyle('dashed')} /> 
+                    <span>Dashed Outline</span>
+                  </label>
+                  <label>
+                    <input type="radio" name="highlightStyle" checked={highlightStyle === 'solid'} onChange={() => setHighlightStyle('solid')} /> 
+                    <span>Striped Overlay</span>
+                  </label>
+                </div>
               </div>
             </div>
 
@@ -702,21 +706,17 @@ function App() {
           <div className="card-header">Export & Print Options</div>
           <div className="card-body">
             
-            <div style={{ display: 'flex', gap: '0.5rem' }}>
+            <div style={{ display: 'flex', gap: '0.75rem' }}>
               <div style={{ flex: 1 }}>
-                <label className="checkbox-label" style={{ fontSize: '0.75rem', marginBottom: '0.25rem' }}>Printer Profile</label>
-                <select value={printerProfile} onChange={(e) => setPrinterProfile(e.target.value as any)}
-                  style={{ width: '100%', padding: '0.4rem', borderRadius: '4px', border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(0,0,0,0.2)', color: 'white', fontSize: '0.75rem' }}
-                >
+                <label className="checkbox-label" style={{ fontSize: '0.75rem', marginBottom: '0.35rem', color: '#94a3b8' }}>Printer Profile</label>
+                <select className="custom-select" value={printerProfile} onChange={(e) => setPrinterProfile(e.target.value as any)}>
                   <option value="A1 Mini (180x180)">A1 Mini (180x180)</option>
                   <option value="X1/P1/A1 (256x256)">X1/P1/A1 (256x256)</option>
                 </select>
               </div>
               <div style={{ flex: 1 }}>
-                <label className="checkbox-label" style={{ fontSize: '0.75rem', marginBottom: '0.25rem' }}>Export Layout</label>
-                <select value={gridSize} onChange={(e) => setGridSize(e.target.value)}
-                  style={{ width: '100%', padding: '0.4rem', borderRadius: '4px', border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(0,0,0,0.2)', color: 'white', fontSize: '0.75rem' }}
-                >
+                <label className="checkbox-label" style={{ fontSize: '0.75rem', marginBottom: '0.35rem', color: '#94a3b8' }}>Export Layout</label>
+                <select className="custom-select" value={gridSize} onChange={(e) => setGridSize(e.target.value)}>
                   <option value="auto">Auto (Max 2x2)</option>
                   <option value="1x1">1x1 Plate</option>
                   <option value="2x2">2x2 Plates</option>
