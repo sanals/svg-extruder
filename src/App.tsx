@@ -242,7 +242,7 @@ function App() {
           setMeshColorOverrides({});
           setIsMerging(false);
         }, 50);
-      } else if (file.type === 'image/png' || file.type === 'image/jpeg') {
+      } else if (file.type === 'image/png' || file.type === 'image/jpeg' || file.type === 'image/webp') {
         const url = URL.createObjectURL(file);
         setIsTracing("Step 1/3: Loading Image...");
         setSvgUrl(null); // Clear canvas
@@ -466,7 +466,7 @@ function App() {
                 }} onMouseOver={(e) => e.currentTarget.style.backgroundColor = '#2563eb'} onMouseOut={(e) => e.currentTarget.style.backgroundColor = '#3b82f6'}>
                   <Upload size={16} /> Image
                 </div>
-                <input id="image-upload" type="file" accept=".png, .jpg, .jpeg" onChange={handleFileUpload} style={{ display: 'none' }} />
+                <input id="image-upload" type="file" accept=".png, .jpg, .jpeg, .webp" onChange={handleFileUpload} style={{ display: 'none' }} />
               </label>
 
               <label htmlFor="svg-upload" style={{ flex: 1, cursor: 'pointer' }}>
