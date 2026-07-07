@@ -84,7 +84,7 @@ export interface SvgModelProps {
 }
 
 export interface SvgModelRef {
-  fuseSelected: (idsToFuse: string[], onProgress: (msg: string) => void) => Promise<string | null>;
+  fuseSelected: (idsToFuse: string[], targetColorHex: string, onProgress: (msg: string) => void) => Promise<string[] | null>;
   sliceAndExport: (buildPlateSize: number, gridSize: string, printerModel: string, mergeByColor: boolean, customScale: number, clearance: number, scaleZProportionally: boolean, onProgress: (msg: string) => void) => Promise<Blob | null>;
   getShapes: () => { id: string; color: THREE.Color; colorHex: string; shapes: THREE.Shape[] }[];
   setShapes: (shapes: { id: string; color: THREE.Color; colorHex: string; shapes: THREE.Shape[] }[]) => void;
@@ -171,7 +171,7 @@ export const SvgModel = React.forwardRef<SvgModelRef, SvgModelProps>(({
   React.useImperativeHandle(ref, () => ({
     getShapes: () => shapesWithColors,
     setShapes: (newShapes) => setShapesWithColors(newShapes),
-    fuseSelected: async (idsToFuse: string[], onProgress: (msg: string) => void) => {
+    fuseSelected: async (idsToFuse: string[], targetColorHex: string, onProgress: (msg: string) => void) => {
       const itemsToFuse = shapesWithColors.filter(item => idsToFuse.includes(item.id) && item.shapes.length > 0);
       if (itemsToFuse.length === 0) return null;
 
@@ -211,7 +211,6 @@ export const SvgModel = React.forwardRef<SvgModelRef, SvgModelProps>(({
       onProgress("Rebuilding 3D meshes...");
       await new Promise(r => requestAnimationFrame(() => setTimeout(r, 0)));
 
-      const resultMultiPoly: MultiPolygon = [];
       const parsePolyNode = (node: any, multiPoly: MultiPolygon) => {
         if (!node.IsHole()) {
           const ring: Ring = node.Contour().map((p: any) => [p.X / scale, p.Y / scale]);
@@ -231,11 +230,26 @@ export const SvgModel = React.forwardRef<SvgModelRef, SvgModelProps>(({
         }
       };
 
-      // @ts-ignore
-      solutionTree.Childs().forEach((child: any) => parsePolyNode(child, resultMultiPoly));
-      const fusedShapes = multiPolygonToShapes(resultMultiPoly);
+      const newIds: string[] = [];
+      const newItems: any[] = [];
+      const targetItem = itemsToFuse.find(i => (meshColorOverrides[i.id] || i.colorHex) === targetColorHex) || itemsToFuse[0];
 
-      const newId = `fused_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+      // @ts-ignore
+      solutionTree.Childs().forEach((child: any, index: number) => {
+        const individualMultiPoly: MultiPolygon = [];
+        parsePolyNode(child, individualMultiPoly);
+        const shapes = multiPolygonToShapes(individualMultiPoly);
+        
+        const id = `fused_${Date.now()}_${index}_${Math.random().toString(36).substring(2, 6)}`;
+        newIds.push(id);
+        
+        newItems.push({
+          id,
+          color: targetItem.color,
+          colorHex: targetColorHex,
+          shapes
+        });
+      });
 
       setShapesWithColors(prev => {
         const next = [...prev];
@@ -245,18 +259,11 @@ export const SvgModel = React.forwardRef<SvgModelRef, SvgModelProps>(({
             next[itemIdx] = { ...next[itemIdx], shapes: [] };
           }
         });
-
-        next.push({
-          id: newId,
-          color: itemsToFuse[0].color,
-          colorHex: itemsToFuse[0].colorHex,
-          shapes: fusedShapes
-        });
-
+        next.push(...newItems);
         return next;
       });
 
-      return newId;
+      return newIds;
     },
 
     sliceAndExport: async (buildPlateSize: number, gridSize: string, printerModel: string, mergeByColor: boolean, customScale: number, clearance: number, scaleZProportionally: boolean, onProgress: (msg: string) => void) => {

@@ -4,7 +4,7 @@ import { Canvas } from '@react-three/fiber';
 import { OrbitControls, Center } from '@react-three/drei';
 import * as THREE from 'three';
 import * as BufferGeometryUtils from 'three/examples/jsm/utils/BufferGeometryUtils.js';
-import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js';
+import { STLExporter } from 'three/examples/jsm/exporters/STLExporter.js';
 import ImageTracer from 'imagetracerjs';
 import { SvgModel, type SvgModelRef } from './components/SvgModel';
 import './index.css';
@@ -27,6 +27,7 @@ function App() {
   const [meshColorOverrides, setMeshColorOverrides] = useState<Record<string, string>>({});
   const [mergeColors3MF, setMergeColors3MF] = useState<boolean>(true);
   const [isMerging, setIsMerging] = useState(false);
+  const [isFusingSelection, setIsFusingSelection] = useState(false);
   const [fuseStatus, setFuseStatus] = useState<string | null>(null);
 
   const [printerProfile, setPrinterProfile] = useState<'A1 Mini (180x180)' | 'X1/P1/A1 (256x256)'>('X1/P1/A1 (256x256)');
@@ -121,41 +122,37 @@ function App() {
     ]);
   };
 
-  const handleMergeColors = (targetColorHex: string) => {
-    pushToHistory();
-    let idsToUpdate = selectedMeshIds;
-
-    setMeshColorOverrides(prev => {
-      const next = { ...prev };
-      idsToUpdate.forEach(id => {
-        next[id] = targetColorHex;
-      });
-      return next;
-    });
-
-    setIsMerging(false);
-    setSelectedMeshIds([]);
+  const initiateFuse = () => {
+    if (selectedUniqueColors.length > 1) {
+      setIsFusingSelection(true);
+    } else {
+      executeFuse(selectedUniqueColors[0] || "000000");
+    }
   };
 
-  const handleFuseParts = async () => {
+  const executeFuse = async (targetColorHex: string) => {
+    setIsFusingSelection(false);
+    setIsMerging(false);
     if (!svgModelRef.current) return;
 
     pushToHistory();
     setFuseStatus("Initializing fusion...");
     await new Promise(r => requestAnimationFrame(() => setTimeout(r, 0)));
 
-    const newId = await svgModelRef.current.fuseSelected(selectedMeshIds, (msg) => {
+    const newIds = await svgModelRef.current.fuseSelected(selectedMeshIds, targetColorHex, (msg) => {
       setFuseStatus(msg);
     });
 
-    if (newId) {
-      // Apply the color override of the first selected part to the new fused part
+    if (newIds && newIds.length > 0) {
+      // Apply the selected color override to the new fused parts
       setMeshColorOverrides(prev => {
         const next = { ...prev };
-        next[newId] = currentMeshColors.find(m => m.id === selectedMeshIds[0])?.colorHex || "000000";
+        newIds.forEach(id => {
+          next[id] = targetColorHex;
+        });
         return next;
       });
-      setSelectedMeshIds([newId]);
+      setSelectedMeshIds([...newIds]);
     }
 
     setFuseStatus(null);
@@ -422,25 +419,17 @@ function App() {
       }
     }
 
-    const exporter = new GLTFExporter();
-    exporter.parse(
-      finalExportObject,
-      (gltf) => {
-        const output = JSON.stringify(gltf, null, 2);
-        const blob = new Blob([output], { type: 'text/plain' });
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement('a');
-        link.style.display = 'none';
-        link.href = url;
-        link.download = 'extruded_model.gltf';
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-      },
-      (error) => {
-        console.error('An error happened during parsing', error);
-      }
-    );
+    const exporter = new STLExporter();
+    const result = exporter.parse(finalExportObject, { binary: true });
+    const blob = new Blob([result], { type: 'application/octet-stream' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.style.display = 'none';
+    link.href = url;
+    link.download = 'extruded_model.stl';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
   };
 
   // Calculate current average depth of selected meshes to display on the slider
@@ -599,6 +588,20 @@ function App() {
                 <label style={{ fontSize: '0.8rem', color: '#94a3b8', display: 'block', marginBottom: '0.5rem' }}>
                   Colors Used <span style={{ fontSize: '0.65rem', color: '#64748b', fontWeight: 'normal', float: 'right' }}>(Drag to expand)</span>
                 </label>
+                <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.5rem' }}>
+                  <button 
+                    onClick={() => setSelectedMeshIds(currentMeshColors.map(m => m.id))}
+                    style={{ fontSize: '0.7rem', padding: '0.25rem 0.5rem', flex: 1, backgroundColor: '#3b82f6' }}
+                  >
+                    Select All
+                  </button>
+                  <button 
+                    onClick={() => setSelectedMeshIds([])}
+                    style={{ fontSize: '0.7rem', padding: '0.25rem 0.5rem', flex: 1, backgroundColor: '#64748b' }}
+                  >
+                    Deselect All
+                  </button>
+                </div>
                 <div className="colors-scroll-container" style={{
                   display: 'flex', flexWrap: 'wrap', gap: '0.5rem', height: '140px', minHeight: '60px', maxHeight: '40vh',
                   overflowY: 'auto', alignContent: 'flex-start', padding: '0.5rem', resize: 'vertical',
@@ -655,8 +658,8 @@ function App() {
                     </button>
                   )}
 
-                  {selectedMeshIds.length > 1 && !isMerging && (
-                    <button onClick={handleFuseParts} style={{ fontSize: '0.75rem', padding: '0.5rem', backgroundColor: '#f97316' }} title="Mathematically fuse touching parts into a single seamless polygon">
+                  {selectedMeshIds.length > 1 && !isMerging && !isFusingSelection && (
+                    <button onClick={initiateFuse} style={{ fontSize: '0.75rem', padding: '0.5rem', backgroundColor: '#f97316' }} title="Mathematically fuse touching parts into a single seamless polygon">
                       Fuse Touching Parts
                     </button>
                   )}
@@ -669,7 +672,7 @@ function App() {
                       {selectedUniqueColors.map(colorHex => (
                         <div key={`target-${colorHex}`} style={{ position: 'relative' }}>
                           <div
-                            onClick={() => handleMergeColors(colorHex)}
+                            onClick={() => executeFuse(colorHex)}
                             style={{
                               width: '32px', height: '32px', backgroundColor: `#${colorHex}`, borderRadius: '50%',
                               cursor: 'pointer', border: '2px solid rgba(255,255,255,0.2)', transition: 'transform 0.1s'
@@ -693,6 +696,31 @@ function App() {
                     </div>
                     <button onClick={() => setIsMerging(false)} style={{ marginTop: '0.75rem', fontSize: '0.7rem', padding: '0.3rem 0.5rem', backgroundColor: 'transparent', border: '1px solid #64748b', width: '100%' }}>
                       Cancel Merge
+                    </button>
+                  </div>
+                )}
+
+                {isFusingSelection && (
+                  <div style={{ marginTop: '0.75rem', backgroundColor: 'rgba(51,65,85,0.5)', padding: '0.75rem', borderRadius: '6px', border: '1px solid rgba(255,255,255,0.05)' }}>
+                    <div style={{ fontSize: '0.75rem', marginBottom: '0.75rem', color: '#cbd5e1' }}>Select color for the fused part:</div>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.75rem' }}>
+                      {selectedUniqueColors.map(colorHex => (
+                        <div key={`fuse-target-${colorHex}`} style={{ position: 'relative' }}>
+                          <div
+                            onClick={() => executeFuse(colorHex)}
+                            style={{
+                              width: '32px', height: '32px', backgroundColor: `#${colorHex}`, borderRadius: '50%',
+                              cursor: 'pointer', border: '2px solid rgba(255,255,255,0.2)', transition: 'transform 0.1s'
+                            }}
+                            onMouseEnter={(e) => e.currentTarget.style.transform = 'scale(1.1)'}
+                            onMouseLeave={(e) => e.currentTarget.style.transform = 'scale(1)'}
+                            title={`Make fused part #${colorHex}`}
+                          />
+                        </div>
+                      ))}
+                    </div>
+                    <button onClick={() => setIsFusingSelection(false)} style={{ marginTop: '0.75rem', fontSize: '0.7rem', padding: '0.3rem 0.5rem', backgroundColor: 'transparent', border: '1px solid #64748b', width: '100%' }}>
+                      Cancel Fuse
                     </button>
                   </div>
                 )}
@@ -758,7 +786,7 @@ function App() {
 
               <label className="checkbox-label" style={{ fontSize: '0.75rem' }}>
                 <input type="checkbox" checked={mergeBeforeExport} onChange={(e) => setMergeBeforeExport(e.target.checked)} />
-                Join objects for GLTF (Single Mesh)
+                Join objects for STL (Single Mesh)
               </label>
             </div>
 
@@ -767,7 +795,7 @@ function App() {
                 <Download size={16} /> Export 3MF (Multi-Plate)
               </button>
               <button disabled={!svgUrl} style={{ width: '100%', backgroundColor: '#475569', fontSize: '0.8rem', padding: '0.5rem' }} onClick={handleExport}>
-                <Download size={14} /> Export GLTF (Raw)
+                <Download size={14} /> Export STL (Raw)
               </button>
             </div>
           </div>
