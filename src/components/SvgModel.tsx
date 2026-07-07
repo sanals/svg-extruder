@@ -81,10 +81,15 @@ export interface SvgModelProps {
   onVerticesCalculated?: (count: number) => void;
   onParseProgress?: (msg: string | null) => void;
   onParseComplete?: (extractedColors: { id: string, colorHex: string }[]) => void;
+  previewMeshIds?: string[];
 }
 
 export interface SvgModelRef {
-  fuseSelected: (idsToFuse: string[], targetColorHex: string, onProgress: (msg: string) => void) => Promise<string[] | null>;
+  fuseSelected: (idsToFuse: string[], targetColorHex: string, forceMergeAll: boolean, onProgress: (msg: string) => void) => Promise<string[] | null>;
+  absorbShards: (selectedIds: string[], maxArea: number, onProgress: (msg: string) => void) => Promise<string[]>;
+  smoothSelected: (selectedIds: string[], amount: number, onProgress: (msg: string) => void) => Promise<string[] | null>;
+  splitDisjoint: (selectedIds: string[], onProgress: (msg: string) => void) => Promise<string[] | null>;
+  expandSelected: (selectedIds: string[], amount: number, onProgress: (msg: string) => void) => Promise<string[] | null>;
   sliceAndExport: (buildPlateSize: number, gridSize: string, printerModel: string, mergeByColor: boolean, customScale: number, clearance: number, scaleZProportionally: boolean, onProgress: (msg: string) => void) => Promise<Blob | null>;
   getShapes: () => { id: string; color: THREE.Color; colorHex: string; shapes: THREE.Shape[] }[];
   setShapes: (shapes: { id: string; color: THREE.Color; colorHex: string; shapes: THREE.Shape[] }[]) => void;
@@ -161,7 +166,7 @@ const whiteStripes = createStripeTexture('rgba(255,255,255,0.7)');
 const blackStripes = createStripeTexture('rgba(0,0,0,0.5)');
 
 export const SvgModel = React.forwardRef<SvgModelRef, SvgModelProps>(({
-  svgUrl, selectByColor, sealGaps, cutOverlaps, highlightStyle = 'dashed', selectedMeshIds, meshDepths, meshColorOverrides = {}, onSelect, onVerticesCalculated, onParseProgress, onParseComplete
+  svgUrl, selectByColor, sealGaps, cutOverlaps, highlightStyle = 'dashed', selectedMeshIds, previewMeshIds = [], meshDepths, meshColorOverrides = {}, onSelect, onVerticesCalculated, onParseProgress, onParseComplete
 }, ref) => {
   const svgData = useLoader(SVGLoader, svgUrl);
   const groupRef = React.useRef<THREE.Group>(null);
@@ -171,33 +176,327 @@ export const SvgModel = React.forwardRef<SvgModelRef, SvgModelProps>(({
   React.useImperativeHandle(ref, () => ({
     getShapes: () => shapesWithColors,
     setShapes: (newShapes) => setShapesWithColors(newShapes),
-    fuseSelected: async (idsToFuse: string[], targetColorHex: string, onProgress: (msg: string) => void) => {
+    
+    
+    absorbShards: async (selectedIds: string[], maxArea: number, onProgress: (msg: string) => void) => {
+      const rootItems = shapesWithColors.filter(item => selectedIds.includes(item.id) && item.shapes.length > 0);
+      if (rootItems.length === 0) return [];
+      
+      onProgress("Analyzing geometry...");
+      await new Promise(r => requestAnimationFrame(() => setTimeout(r, 0)));
+
+      // Extract bounds of roots
+      const rootBounds: THREE.Box2[] = [];
+      rootItems.forEach(root => {
+         const bounds = new THREE.Box2();
+         root.shapes.forEach(shape => {
+            const pts = shape.getPoints();
+            if (pts.length > 2) {
+               pts.forEach(p => bounds.expandByPoint(p));
+            }
+         });
+         // expand bounds slightly to catch touching things
+         bounds.expandByScalar(0.01);
+         rootBounds.push(bounds);
+      });
+
+      // Find shards that are touching root bounds and smaller than maxArea
+      const shardsFound: string[] = [];
+      shapesWithColors.forEach(item => {
+        if (selectedIds.includes(item.id)) return;
+        if (item.shapes.length === 0) return;
+        
+        let area = 0;
+        const bounds = new THREE.Box2();
+        let hasBounds = false;
+        
+        item.shapes.forEach(shape => {
+          const pts = shape.getPoints();
+          if (pts.length > 2) {
+            area += THREE.ShapeUtils.area(pts);
+            if (!hasBounds) {
+              bounds.setFromPoints(pts);
+              hasBounds = true;
+            } else {
+              pts.forEach(p => bounds.expandByPoint(p));
+            }
+          }
+          shape.holes.forEach(hole => {
+            const hPts = hole.getPoints();
+            if (hPts.length > 2) area -= THREE.ShapeUtils.area(hPts);
+          });
+        });
+        
+        area = Math.abs(area);
+        
+        if (area <= maxArea) {
+           // Check if it touches any root bounds
+           for (const rb of rootBounds) {
+             if (rb.intersectsBox(bounds)) {
+               shardsFound.push(item.id);
+               break;
+             }
+           }
+        }
+      });
+      
+      return shardsFound;
+    },
+smoothSelected: async (selectedIds: string[], amount: number, onProgress: (msg: string) => void) => {
+      const itemsToSmooth = shapesWithColors.filter(item => selectedIds.includes(item.id) && item.shapes.length > 0);
+      if (itemsToSmooth.length === 0) return null;
+
+      onProgress("Applying morphological smoothing...");
+      await new Promise(r => requestAnimationFrame(() => setTimeout(r, 0)));
+
+      const scale = 10000;
+      const amountScaled = amount * scale;
+      const co = new ClipperLib.ClipperOffset();
+      
+      const newIds: string[] = [];
+      const newItems: any[] = [];
+      const originalIdsToRemove = new Set<string>();
+
+      itemsToSmooth.forEach((item, itemIndex) => {
+        originalIdsToRemove.add(item.id);
+        const originalColorHex = meshColorOverrides[item.id] || item.colorHex;
+
+        const subjectPolygons: any[] = [];
+        item.shapes.forEach(shape => {
+          const points = shape.extractPoints(10).shape;
+          if (points.length < 3) return;
+          const clipperPath = points.map(p => ({ X: Math.round(p.x * scale), Y: Math.round(p.y * scale) }));
+          ClipperLib.Clipper.Orientation(clipperPath) ? null : clipperPath.reverse();
+          subjectPolygons.push(clipperPath);
+        });
+
+        // @ts-ignore
+        co.Clear();
+        // @ts-ignore
+        co.AddPaths(subjectPolygons, ClipperLib.JoinType.jtRound, ClipperLib.EndType.etClosedPolygon);
+        
+        // Shrink
+        // @ts-ignore
+        const shrunkTree = new ClipperLib.PolyTree();
+        co.Execute(shrunkTree, -amountScaled);
+
+        if (shrunkTree.ChildCount() > 0) {
+           // Grow
+           const shrunkPolygons: any[] = [];
+           const getPolys = (node: any) => {
+              if (!node.IsHole()) shrunkPolygons.push(node.Contour());
+              node.Childs().forEach(getPolys);
+           };
+           shrunkTree.Childs().forEach(getPolys);
+
+           // @ts-ignore
+           co.Clear();
+           // @ts-ignore
+           co.AddPaths(shrunkPolygons, ClipperLib.JoinType.jtRound, ClipperLib.EndType.etClosedPolygon);
+           
+           // @ts-ignore
+           const grownTree = new ClipperLib.PolyTree();
+           co.Execute(grownTree, amountScaled);
+
+           const shapes: THREE.Shape[] = [];
+           const parsePolyNode = (node: any) => {
+             if (!node.IsHole()) {
+               const ring = node.Contour().map((p: any) => [p.X / scale, p.Y / scale]);
+               if (ring.length > 0 && (ring[0][0] !== ring[ring.length - 1][0] || ring[0][1] !== ring[ring.length - 1][1])) ring.push([...ring[0]]);
+               if (ring.length >= 4) {
+                 const shape = new THREE.Shape();
+                 shape.moveTo(ring[0][0], ring[0][1]);
+                 for (let i = 1; i < ring.length; i++) shape.lineTo(ring[i][0], ring[i][1]);
+                 shapes.push(shape);
+               }
+             }
+             node.Childs().forEach((child: any) => {
+               if (child.IsHole()) child.Childs().forEach(parsePolyNode);
+             });
+           };
+           // @ts-ignore
+           grownTree.Childs().forEach((child: any) => parsePolyNode(child));
+
+           if (shapes.length > 0) {
+             const id = `smoothed_${Date.now()}_${itemIndex}_${Math.random().toString(36).substring(2, 6)}`;
+             newIds.push(id);
+             newItems.push({ id, color: item.color, colorHex: originalColorHex, shapes });
+           }
+        }
+      });
+
+      setShapesWithColors(prev => {
+        const next = [...prev];
+        originalIdsToRemove.forEach(id => {
+          const idx = next.findIndex(n => n.id === id);
+          if (idx !== -1) next[idx] = { ...next[idx], shapes: [] };
+        });
+        next.push(...newItems);
+        return next;
+      });
+
+      return newIds;
+    },
+    expandSelected: async (selectedIds: string[], amount: number, onProgress: (msg: string) => void) => {
+      const itemsToExpand = shapesWithColors.filter(item => selectedIds.includes(item.id) && item.shapes.length > 0);
+      if (itemsToExpand.length === 0) return null;
+
+      onProgress("Expanding selected shapes to fill gaps...");
+      await new Promise(r => requestAnimationFrame(() => setTimeout(r, 0)));
+
+      const scale = 10000;
+      const amountScaled = amount * scale;
+      const co = new ClipperLib.ClipperOffset();
+      
+      const newIds: string[] = [];
+      const newItems: any[] = [];
+      const originalIdsToRemove = new Set<string>();
+
+      itemsToExpand.forEach((item, itemIndex) => {
+        originalIdsToRemove.add(item.id);
+        const originalColorHex = meshColorOverrides[item.id] || item.colorHex;
+
+        const subjectPolygons: any[] = [];
+        item.shapes.forEach(shape => {
+          const points = shape.extractPoints(10).shape;
+          if (points.length < 3) return;
+          const clipperPath = points.map(p => ({ X: Math.round(p.x * scale), Y: Math.round(p.y * scale) }));
+          ClipperLib.Clipper.Orientation(clipperPath) ? null : clipperPath.reverse();
+          subjectPolygons.push(clipperPath);
+        });
+
+        // @ts-ignore
+        co.Clear();
+        // @ts-ignore
+        co.AddPaths(subjectPolygons, ClipperLib.JoinType.jtRound, ClipperLib.EndType.etClosedPolygon);
+        
+        // Grow
+        // @ts-ignore
+        const grownTree = new ClipperLib.PolyTree();
+        co.Execute(grownTree, amountScaled);
+
+        const shapes: THREE.Shape[] = [];
+        const parsePolyNode = (node: any) => {
+          if (!node.IsHole()) {
+            const ring = node.Contour().map((p: any) => [p.X / scale, p.Y / scale]);
+            if (ring.length > 0 && (ring[0][0] !== ring[ring.length - 1][0] || ring[0][1] !== ring[ring.length - 1][1])) ring.push([...ring[0]]);
+            if (ring.length >= 4) {
+              const shape = new THREE.Shape();
+              shape.moveTo(ring[0][0], ring[0][1]);
+              for (let i = 1; i < ring.length; i++) shape.lineTo(ring[i][0], ring[i][1]);
+              shapes.push(shape);
+            }
+          }
+          node.Childs().forEach((child: any) => {
+            if (child.IsHole()) child.Childs().forEach(parsePolyNode);
+          });
+        };
+        // @ts-ignore
+        grownTree.Childs().forEach((child: any) => parsePolyNode(child));
+
+        if (shapes.length > 0) {
+          const id = `expanded_${Date.now()}_${itemIndex}_${Math.random().toString(36).substring(2, 6)}`;
+          newIds.push(id);
+          newItems.push({ id, color: item.color, colorHex: originalColorHex, shapes });
+        }
+      });
+
+      setShapesWithColors(prev => {
+        const next = [...prev];
+        originalIdsToRemove.forEach(id => {
+          const idx = next.findIndex(n => n.id === id);
+          if (idx !== -1) next[idx] = { ...next[idx], shapes: [] };
+        });
+        next.push(...newItems);
+        return next;
+      });
+
+      return newIds;
+    },
+    splitDisjoint: async (selectedIds: string[], onProgress: (msg: string) => void) => {
+      const itemsToSplit = shapesWithColors.filter(item => selectedIds.includes(item.id) && item.shapes.length > 1);
+      if (itemsToSplit.length === 0) return null;
+
+      onProgress("Separating disjoint parts...");
+      await new Promise(r => requestAnimationFrame(() => setTimeout(r, 0)));
+
+      const newIds: string[] = [];
+      const newItems: any[] = [];
+      const originalIdsToRemove = new Set<string>();
+
+      itemsToSplit.forEach((item, itemIndex) => {
+        originalIdsToRemove.add(item.id);
+        const originalColorHex = meshColorOverrides[item.id] || item.colorHex;
+        
+        item.shapes.forEach((shape, shapeIndex) => {
+          const id = `split_${Date.now()}_${itemIndex}_${shapeIndex}_${Math.random().toString(36).substring(2, 6)}`;
+          newIds.push(id);
+          newItems.push({
+            id,
+            color: item.color,
+            colorHex: originalColorHex,
+            shapes: [shape]
+          });
+        });
+      });
+
+      setShapesWithColors(prev => {
+        const next = [...prev];
+        originalIdsToRemove.forEach(id => {
+          const idx = next.findIndex(n => n.id === id);
+          if (idx !== -1) next[idx] = { ...next[idx], shapes: [] };
+        });
+        next.push(...newItems);
+        return next;
+      });
+
+      return newIds;
+    },
+    fuseSelected: async (idsToFuse: string[], targetColorHex: string, forceMergeAll: boolean = false, onProgress: (msg: string) => void) => {
       const itemsToFuse = shapesWithColors.filter(item => idsToFuse.includes(item.id) && item.shapes.length > 0);
       if (itemsToFuse.length === 0) return null;
 
-      onProgress("Extracting geometry...");
+      onProgress(forceMergeAll ? "Absorbing shards into main shape..." : "Extracting geometry...");
       await new Promise(r => requestAnimationFrame(() => setTimeout(r, 0)));
 
       const scale = 10000;
       const clipper = new ClipperLib.Clipper();
-
+      
+      const unconsumedItems = new Set<{id: string, area: number, bounds: THREE.Box2, item: any}>();
       itemsToFuse.forEach(item => {
+        let totalArea = 0;
+        let bounds = new THREE.Box2();
+        let hasBounds = false;
+        
         item.shapes.forEach(shape => {
+          const points = shape.getPoints();
+          if (points.length > 2) {
+            totalArea += THREE.ShapeUtils.area(points);
+            if (!hasBounds) {
+              bounds.setFromPoints(points);
+              hasBounds = true;
+            } else {
+              points.forEach(p => bounds.expandByPoint(p));
+            }
+          }
+          shape.holes.forEach(hole => {
+            const hPoints = hole.getPoints();
+            if (hPoints.length > 2) totalArea -= THREE.ShapeUtils.area(hPoints);
+          });
+          
           const polygon = shapeToPolygon(shape);
           for (let i = 0; i < polygon.length; i++) {
-            const ring = polygon[i];
-            if (ring.length < 3) continue;
-            const clipperPath = ring.map(p => ({ X: Math.round(p[0] * scale), Y: Math.round(p[1] * scale) }));
-
-            const isOuter = (i === 0);
-            const orient = ClipperLib.Clipper.Orientation(clipperPath);
-            if (isOuter !== orient) {
-              clipperPath.reverse();
-            }
-            // @ts-ignore
-            clipper.AddPath(clipperPath, ClipperLib.PolyType.ptSubject, true);
+             const ring = polygon[i];
+             if (ring.length < 3) continue;
+             const clipperPath = ring.map(p => ({ X: Math.round(p[0] * scale), Y: Math.round(p[1] * scale) }));
+             const isOuter = (i === 0);
+             if (isOuter !== ClipperLib.Clipper.Orientation(clipperPath)) clipperPath.reverse();
+             // @ts-ignore
+             clipper.AddPath(clipperPath, ClipperLib.PolyType.ptSubject, true);
           }
         });
+        
+        unconsumedItems.add({ id: item.id, item, area: Math.abs(totalArea), bounds });
       });
 
       onProgress("Mathematically fusing shapes...");
@@ -208,7 +507,7 @@ export const SvgModel = React.forwardRef<SvgModelRef, SvgModelProps>(({
       // @ts-ignore
       clipper.Execute(ClipperLib.ClipType.ctUnion, solutionTree, ClipperLib.PolyFillType.pftNonZero, ClipperLib.PolyFillType.pftNonZero);
 
-      onProgress("Rebuilding 3D meshes...");
+      onProgress("Rebuilding fused meshes...");
       await new Promise(r => requestAnimationFrame(() => setTimeout(r, 0)));
 
       const parsePolyNode = (node: any, multiPoly: MultiPolygon) => {
@@ -234,38 +533,94 @@ export const SvgModel = React.forwardRef<SvgModelRef, SvgModelProps>(({
       const newItems: any[] = [];
       const targetItem = itemsToFuse.find(i => (meshColorOverrides[i.id] || i.colorHex) === targetColorHex) || itemsToFuse[0];
 
-      // @ts-ignore
-      solutionTree.Childs().forEach((child: any, index: number) => {
-        const individualMultiPoly: MultiPolygon = [];
-        parsePolyNode(child, individualMultiPoly);
-        const shapes = multiPolygonToShapes(individualMultiPoly);
-        
-        const id = `fused_${Date.now()}_${index}_${Math.random().toString(36).substring(2, 6)}`;
-        newIds.push(id);
-        
-        newItems.push({
-          id,
-          color: targetItem.color,
-          colorHex: targetColorHex,
-          shapes
-        });
-      });
+      if (forceMergeAll) {
+         const allShapes: THREE.Shape[] = [];
+         // @ts-ignore
+         solutionTree.Childs().forEach((child: any) => {
+            const individualMultiPoly: MultiPolygon = [];
+            parsePolyNode(child, individualMultiPoly);
+            allShapes.push(...multiPolygonToShapes(individualMultiPoly));
+         });
 
-      setShapesWithColors(prev => {
-        const next = [...prev];
-        itemsToFuse.forEach(item => {
-          const itemIdx = next.findIndex(n => n.id === item.id);
-          if (itemIdx !== -1) {
-            next[itemIdx] = { ...next[itemIdx], shapes: [] };
+         if (allShapes.length > 0) {
+            const id = `fused_${Date.now()}_force`;
+            newIds.push(id);
+            newItems.push({ id, color: targetItem.color, colorHex: targetColorHex, shapes: allShapes });
+         }
+         unconsumedItems.clear();
+      } else {
+        // @ts-ignore
+        solutionTree.Childs().forEach((child: any, childIndex: number) => {
+          const individualMultiPoly: MultiPolygon = [];
+          parsePolyNode(child, individualMultiPoly);
+          const shapes = multiPolygonToShapes(individualMultiPoly);
+          
+          let childArea = 0;
+          let childBounds = new THREE.Box2();
+          let hasBounds = false;
+          
+          shapes.forEach(shape => {
+            const points = shape.getPoints();
+            if (points.length > 2) {
+              childArea += THREE.ShapeUtils.area(points);
+              if (!hasBounds) {
+                childBounds.setFromPoints(points);
+                hasBounds = true;
+              } else {
+                points.forEach(p => childBounds.expandByPoint(p));
+              }
+            }
+            shape.holes.forEach(hole => {
+              const hPoints = hole.getPoints();
+              if (hPoints.length > 2) childArea -= THREE.ShapeUtils.area(hPoints);
+            });
+          });
+          
+          childArea = Math.abs(childArea);
+          
+          let matchedIsolatedItem = null;
+          const expandedChildBounds = childBounds.clone().expandByScalar(0.01);
+          
+          for (const unconsumed of Array.from(unconsumedItems)) {
+            if (expandedChildBounds.intersectsBox(unconsumed.bounds)) {
+              const diffRatio = Math.abs(unconsumed.area - childArea) / Math.max(unconsumed.area, 0.00001);
+              if (diffRatio < 0.005) {
+                matchedIsolatedItem = unconsumed;
+                break;
+              }
+            }
+          }
+          
+          if (matchedIsolatedItem) {
+             unconsumedItems.delete(matchedIsolatedItem);
+          } else {
+            const id = `fused_${Date.now()}_${childIndex}_${Math.random().toString(36).substring(2, 6)}`;
+            newIds.push(id);
+            newItems.push({ id, color: targetItem.color, colorHex: targetColorHex, shapes });
           }
         });
-        next.push(...newItems);
-        return next;
-      });
+      }
 
-      return newIds;
+      if (newItems.length > 0) {
+        setShapesWithColors(prev => {
+          const next = [...prev];
+          if (forceMergeAll) {
+             itemsToFuse.forEach(item => {
+               const itemIdx = next.findIndex(n => n.id === item.id);
+               if (itemIdx !== -1) next[itemIdx] = { ...next[itemIdx], shapes: [] };
+             });
+          } else {
+             Array.from(unconsumedItems).forEach(unconsumed => {
+               const itemIdx = next.findIndex(n => n.id === unconsumed.item.id);
+               if (itemIdx !== -1) next[itemIdx] = { ...next[itemIdx], shapes: [] };
+             });
+          }
+          next.push(...newItems);
+          return next;
+        });
+      }
+      return newIds.length > 0 ? newIds : null;
     },
-
     sliceAndExport: async (buildPlateSize: number, gridSize: string, printerModel: string, mergeByColor: boolean, customScale: number, clearance: number, scaleZProportionally: boolean, onProgress: (msg: string) => void) => {
       if (shapesWithColors.length === 0) return null;
 
@@ -886,7 +1241,8 @@ export const SvgModel = React.forwardRef<SvgModelRef, SvgModelProps>(({
         const baseZOffset = index * 0.001;
         // If selected, add an offset larger than the maximum possible base offset so it jumps to the front
         const selectedZOffset = shapesWithColors.length * 0.001 + 0.1;
-        const zPosition = isSelected ? baseZOffset + selectedZOffset : baseZOffset;
+        const isPreviewed = previewMeshIds.includes(item.id);
+        const zPosition = (isSelected || isPreviewed) ? baseZOffset + selectedZOffset : baseZOffset;
 
         if (!item.shapes || item.shapes.length === 0) return null;
 
@@ -922,6 +1278,7 @@ export const SvgModel = React.forwardRef<SvgModelRef, SvgModelProps>(({
               side={THREE.DoubleSide}
             />
             {isSelected && highlightStyle === 'dashed' && <DashedEdges shapes={item.shapes} color={contrastColor} depth={depth} />}
+            {isPreviewed && <DashedEdges shapes={item.shapes} color="#ef4444" depth={depth} />}
             {isSelected && highlightStyle === 'solid' && (
               <mesh position={[0, 0, depth + 0.1]}>
                 {depth === 0 ? (

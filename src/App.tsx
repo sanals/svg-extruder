@@ -11,6 +11,7 @@ import './index.css';
 
 function App() {
   const [svgUrl, setSvgUrl] = useState<string | null>(null);
+  const [rawSvgContent, setRawSvgContent] = useState<string | null>(null);
   const [imageDataUrl, setImageDataUrl] = useState<string | null>(null);
   const [colorCount, setColorCount] = useState<number>(8);
   const [selectedMeshIds, setSelectedMeshIds] = useState<string[]>([]);
@@ -139,7 +140,7 @@ function App() {
     setFuseStatus("Initializing fusion...");
     await new Promise(r => requestAnimationFrame(() => setTimeout(r, 0)));
 
-    const newIds = await svgModelRef.current.fuseSelected(selectedMeshIds, targetColorHex, (msg) => {
+    const newIds = await svgModelRef.current.fuseSelected(selectedMeshIds, targetColorHex, false, (msg: string) => {
       setFuseStatus(msg);
     });
 
@@ -187,6 +188,153 @@ function App() {
     }
   };
 
+  const handleSaveProject = () => {
+    if (!rawSvgContent) { alert("No active model to save."); return; }
+    const projectData = {
+      rawSvgContent, colorCount, meshDepths, meshColorOverrides, selectedMeshIds,
+      highlightStyle, sealGaps, cutOverlaps, customScale, clearance, printerProfile, gridSize, mergeColors3MF
+    };
+    const jsonString = JSON.stringify(projectData);
+    const blob = new Blob([jsonString], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url; link.download = "model.svgproj";
+    document.body.appendChild(link); link.click(); document.body.removeChild(link);
+  };
+
+  const handleLoadProject = (e: any) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        const jsonString = event.target?.result;
+        const projectData = JSON.parse(jsonString as string);
+        if (!projectData.rawSvgContent) { alert("Invalid project file."); return; }
+        const blob = new Blob([projectData.rawSvgContent], { type: 'image/svg+xml' });
+        const svgBlobUrl = URL.createObjectURL(blob);
+        setIsTracing("Loading Project...");
+        setTimeout(() => {
+          setRawSvgContent(projectData.rawSvgContent); setSvgUrl(svgBlobUrl);
+          setColorCount(projectData.colorCount || 8); setMeshDepths(projectData.meshDepths || {});
+          setMeshColorOverrides(projectData.meshColorOverrides || {}); setSelectedMeshIds(projectData.selectedMeshIds || []);
+          setHighlightStyle(projectData.highlightStyle || 'dashed'); setSealGaps(projectData.sealGaps ?? true);
+          setCutOverlaps(projectData.cutOverlaps ?? true);
+          if (projectData.customScale) setCustomScale(projectData.customScale);
+          if (projectData.clearance !== undefined) setClearance(projectData.clearance);
+          if (projectData.printerProfile) setPrinterProfile(projectData.printerProfile);
+          if (projectData.gridSize) setGridSize(projectData.gridSize);
+          if (projectData.mergeColors3MF !== undefined) setMergeColors3MF(projectData.mergeColors3MF);
+          setHistory([]); setMeshColors([]); setVertexCount(0); setIsMerging(false); setIsTracing(null);
+        }, 50);
+      } catch (err) { alert("Failed to load project file."); }
+    };
+    reader.readAsText(file); e.target.value = '';
+  };
+
+  const shardSizeSlider = 100;
+  const [pendingShards, setPendingShards] = useState<Record<string, string[]> | null>(null);
+  const [ignoredShardColors, setIgnoredShardColors] = useState<string[]>([]);
+  const [isAbsorbingShards, setIsAbsorbingShards] = useState(false);
+  const [isSplitting, setIsSplitting] = useState(false);
+  const [splitStatus, setSplitStatus] = useState<string | null>(null);
+  const [isExpanding, setIsExpanding] = useState(false);
+  const [expandAmount, setExpandAmount] = useState(1.0);
+  const [expandStatus, setExpandStatus] = useState<string | null>(null);
+
+  const handlePreviewShards = async () => {
+    if (selectedMeshIds.length === 0 || !svgModelRef.current) return;
+    setIsAbsorbingShards(true);
+    try {
+      const absorbedIds = await svgModelRef.current.absorbShards(selectedMeshIds, shardSizeSlider, () => {});
+      if (absorbedIds && absorbedIds.length > 0) {
+        const shapes = svgModelRef.current.getShapes();
+        const shardsByColor: Record<string, string[]> = {};
+        absorbedIds.forEach((id: string) => {
+          const shape = shapes.find(s => s.id === id);
+          if (shape) {
+            const hex = meshColorOverrides[id] || shape.colorHex;
+            if (!shardsByColor[hex]) shardsByColor[hex] = [];
+            shardsByColor[hex].push(id);
+          }
+        });
+        setPendingShards(shardsByColor); setIgnoredShardColors([]);
+      } else { alert("No edge shards found touching this part."); }
+    } catch (e) { alert("Failed to preview shards."); } finally { setIsAbsorbingShards(false); }
+  };
+
+  const confirmAbsorbShards = async () => {
+    if (!pendingShards || !svgModelRef.current) return;
+    const targetColorHex = selectedUniqueColors[0] || "000000";
+    const idsToAbsorb = Object.entries(pendingShards).filter(([colorHex]) => !ignoredShardColors.includes(colorHex)).flatMap(([_, ids]) => ids);
+    if (idsToAbsorb.length > 0) {
+      pushToHistory(); setIsAbsorbingShards(true); setFuseStatus("Fusing shards...");
+      try {
+        const allIdsToFuse = [...new Set([...selectedMeshIds, ...idsToAbsorb])];
+        const newIds = await svgModelRef.current.fuseSelected(allIdsToFuse, targetColorHex, true, (msg: string) => setFuseStatus(msg));
+        if (newIds && newIds.length > 0) {
+          setMeshColorOverrides(prev => {
+            const next = { ...prev };
+            newIds.forEach(id => next[id] = targetColorHex);
+            return next;
+          });
+          setSelectedMeshIds(newIds);
+        }
+      } catch (e) { alert("Failed to fuse shards."); } finally { setIsAbsorbingShards(false); setFuseStatus(null); }
+    }
+    setPendingShards(null); setIgnoredShardColors([]);
+  };
+
+  const handleSplitDisjoint = async () => {
+    if (selectedMeshIds.length === 0 || !svgModelRef.current) return;
+    pushToHistory(); setIsSplitting(true); setSplitStatus("Splitting...");
+    try {
+      const newIds = await svgModelRef.current.splitDisjoint(selectedMeshIds, (msg: string) => setSplitStatus(msg));
+      if (newIds && newIds.length > 0) { 
+        const avgDepth = selectedMeshIds.reduce((sum, id) => sum + (meshDepths[id] ?? 0), 0) / selectedMeshIds.length;
+        setMeshDepths(prev => {
+          const next = { ...prev };
+          newIds.forEach(id => next[id] = avgDepth || 0);
+          return next;
+        });
+        const firstColor = meshColorOverrides[selectedMeshIds[0]];
+        if (firstColor) {
+           setMeshColorOverrides(prev => {
+              const next = { ...prev };
+              newIds.forEach(id => next[id] = firstColor);
+              return next;
+           });
+        }
+        setSelectedMeshIds(newIds); 
+      } else { alert("No disjoint parts found."); }
+    } catch (e) { alert("Failed to split."); } finally { setIsSplitting(false); setSplitStatus(null); }
+  };
+
+  const handleExpandSelected = async () => {
+    if (selectedMeshIds.length === 0 || !svgModelRef.current) return;
+    pushToHistory(); setIsExpanding(true); setExpandStatus("Expanding...");
+    try {
+      const newIds = await svgModelRef.current.expandSelected(selectedMeshIds, expandAmount, (msg: string) => setExpandStatus(msg));
+      if (newIds && newIds.length > 0) { 
+        const avgDepth = selectedMeshIds.reduce((sum, id) => sum + (meshDepths[id] ?? 0), 0) / selectedMeshIds.length;
+        setMeshDepths(prev => {
+          const next = { ...prev };
+          newIds.forEach(id => next[id] = avgDepth || 0);
+          return next;
+        });
+        const firstColor = meshColorOverrides[selectedMeshIds[0]];
+        if (firstColor) {
+           setMeshColorOverrides(prev => {
+              const next = { ...prev };
+              newIds.forEach(id => next[id] = firstColor);
+              return next;
+           });
+        }
+        setSelectedMeshIds(newIds); 
+      }
+    } catch (e) { alert("Failed to expand."); } finally { setIsExpanding(false); setExpandStatus(null); }
+  };
+
   const traceImage = (dataUrl: string, colors: number) => {
     setIsTracing("Step 2/3: Vectorizing Pixels to SVG...");
     setTimeout(() => {
@@ -197,6 +345,7 @@ function App() {
           const svgBlobUrl = URL.createObjectURL(blob);
 
           setIsTracing("Step 3/3: Parsing 2D Geometry...");
+          setRawSvgContent(svgStr);
           setSvgUrl(svgBlobUrl);
           setSelectedMeshIds([]);
           setMeshDepths({});
@@ -287,6 +436,12 @@ function App() {
       return newDepths;
     });
   };
+
+  const previewMeshIds = pendingShards 
+    ? Object.entries(pendingShards)
+        .filter(([colorHex]) => !ignoredShardColors.includes(colorHex))
+        .flatMap(([_, ids]) => ids)
+    : [];
 
   const handleColorCountChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const newColors = parseInt(e.target.value);
@@ -446,6 +601,18 @@ function App() {
         <div className="card">
           <div className="card-header">Input & Setup</div>
           <div className="card-body">
+            
+            {/* SAVE AND LOAD */}
+            <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.5rem' }}>
+              <label style={{ flex: 1, fontSize: '0.75rem', padding: '0.5rem', backgroundColor: '#334155', borderRadius: '4px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', border: '1px solid #475569' }}>
+                Load Project
+                <input type="file" accept=".svgproj" onChange={handleLoadProject} style={{ display: 'none' }} />
+              </label>
+              <button onClick={handleSaveProject} disabled={!rawSvgContent} style={{ flex: 1, fontSize: '0.75rem', padding: '0.5rem', backgroundColor: '#334155', borderRadius: '4px', color: 'white', border: '1px solid #475569', cursor: rawSvgContent ? 'pointer' : 'not-allowed', opacity: rawSvgContent ? 1 : 0.5 }}>
+                Save Project
+              </button>
+            </div>
+
             <div style={{ display: 'flex', gap: '0.5rem' }}>
               <label htmlFor="image-upload" style={{ flex: 1, cursor: 'pointer' }}>
                 <div role="button" className="btn-upload" style={{
@@ -496,7 +663,7 @@ function App() {
                   <label htmlFor="color-count">Image Colors To Extract</label>
                   <span>{colorCount}</span>
                 </div>
-                <input id="color-count" type="range" min="2" max="32" step="1" value={colorCount} onChange={handleColorCountChange} />
+                <input id="color-count" type="range" min="2" max="256" step="1" value={colorCount} onChange={handleColorCountChange} style={{ width: '100%' }} />
               </div>
             )}
 
@@ -662,6 +829,73 @@ function App() {
                     <button onClick={initiateFuse} style={{ fontSize: '0.75rem', padding: '0.5rem', backgroundColor: '#f97316' }} title="Mathematically fuse touching parts into a single seamless polygon">
                       Fuse Touching Parts
                     </button>
+                  )}
+
+                  {selectedMeshIds.length > 0 && !isMerging && !isFusingSelection && (
+                    <>
+                      {/* PREVIEW SHARDS */}
+                      <div style={{ marginTop: '0.5rem', padding: '0.5rem', backgroundColor: 'rgba(0,0,0,0.2)', borderRadius: '4px' }}>
+                        <button
+                          style={{ width: '100%', fontSize: '0.75rem', padding: '0.5rem', backgroundColor: '#4f46e5', border: 'none', color: 'white', borderRadius: '4px', cursor: isAbsorbingShards ? 'not-allowed' : 'pointer' }}
+                          onClick={handlePreviewShards}
+                          disabled={isAbsorbingShards}
+                        >
+                          {isAbsorbingShards ? "Scanning..." : "Preview Edge Shards"}
+                        </button>
+                        {pendingShards && (
+                          <div style={{ marginTop: '0.5rem' }}>
+                            <div style={{ fontSize: '0.65rem', marginBottom: '0.25rem', color: '#cbd5e1' }}>Select colors to absorb:</div>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', maxHeight: '100px', overflowY: 'auto' }}>
+                              {Object.entries(pendingShards).map(([colorHex, ids]) => (
+                                <label key={colorHex} style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '0.7rem', color: 'white' }}>
+                                  <input 
+                                    type="checkbox" 
+                                    checked={!ignoredShardColors.includes(colorHex)}
+                                    onChange={(e) => {
+                                      if (e.target.checked) setIgnoredShardColors(prev => prev.filter(c => c !== colorHex));
+                                      else setIgnoredShardColors(prev => [...prev, colorHex]);
+                                    }}
+                                  />
+                                  <div style={{ width: '10px', height: '10px', backgroundColor: `#${colorHex}` }} />
+                                  {ids.length} pieces
+                                </label>
+                              ))}
+                            </div>
+                            <div style={{ display: 'flex', gap: '4px', marginTop: '6px' }}>
+                              <button onClick={() => setPendingShards(null)} style={{ flex: 1, fontSize: '0.65rem', padding: '0.25rem', borderRadius: '4px', backgroundColor: '#64748b', color: 'white', border: 'none' }}>Cancel</button>
+                              <button onClick={confirmAbsorbShards} disabled={isAbsorbingShards} style={{ flex: 1, fontSize: '0.65rem', padding: '0.25rem', backgroundColor: '#10b981', color: 'white', border: 'none', borderRadius: '4px' }}>Confirm</button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* EXPAND (FILL GAPS) */}
+                      <div style={{ marginTop: '0.5rem', padding: '0.5rem', backgroundColor: 'rgba(0,0,0,0.2)', borderRadius: '4px' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.7rem', marginBottom: '4px', color: '#cbd5e1' }}>
+                          <span>Expand (Fill Gaps)</span>
+                          <span>{expandAmount.toFixed(1)}px</span>
+                        </div>
+                        <input type="range" min="0.1" max="5" step="0.1" value={expandAmount} onChange={(e) => setExpandAmount(parseFloat(e.target.value))} style={{ width: '100%' }} />
+                        <button
+                          style={{ width: '100%', fontSize: '0.75rem', padding: '0.5rem', backgroundColor: '#6366f1', marginTop: '6px', border: 'none', color: 'white', borderRadius: '4px', cursor: isExpanding ? 'not-allowed' : 'pointer' }}
+                          onClick={handleExpandSelected}
+                          disabled={isExpanding}
+                        >
+                          {isExpanding ? expandStatus || "Working..." : "Expand Selected"}
+                        </button>
+                      </div>
+
+                      {/* SPLIT DISJOINT */}
+                      <div style={{ marginTop: '0.5rem', padding: '0.5rem', backgroundColor: 'rgba(0,0,0,0.2)', borderRadius: '4px' }}>
+                        <button
+                          style={{ width: '100%', fontSize: '0.75rem', padding: '0.5rem', backgroundColor: '#8b5cf6', border: 'none', color: 'white', borderRadius: '4px', cursor: isSplitting ? 'not-allowed' : 'pointer' }}
+                          onClick={handleSplitDisjoint}
+                          disabled={isSplitting}
+                        >
+                          {isSplitting ? splitStatus || "Working..." : "Separate Disjoint Parts"}
+                        </button>
+                      </div>
+                    </>
                   )}
                 </div>
 
@@ -844,6 +1078,7 @@ function App() {
                     sealGaps={sealGaps}
                     cutOverlaps={cutOverlaps}
                     selectedMeshIds={selectedMeshIds}
+                    previewMeshIds={previewMeshIds}
                     meshDepths={meshDepths}
                     meshColorOverrides={meshColorOverrides}
                     onSelect={(ids, shiftKey) => {
