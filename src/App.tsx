@@ -9,6 +9,92 @@ import ImageTracer from 'imagetracerjs';
 import { SvgModel, type SvgModelRef } from './components/SvgModel';
 import './index.css';
 
+const HoverSlider = ({ min, max, step, value, onChange, onPointerDown, disabled, style, id, displayFormat = (v: number) => v.toFixed(1) }: any) => {
+  const [hoverVal, setHoverVal] = useState<number | null>(null);
+  const [hoverX, setHoverX] = useState<number>(0);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  const handleMouseMove = (e: React.MouseEvent<HTMLInputElement>) => {
+    if (disabled) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    let x = e.clientX - rect.left;
+    
+    // Adjust for thumb width (approx 20px)
+    const thumbWidth = 20;
+    const clickableWidth = rect.width - thumbWidth;
+    let adjustedX = x - (thumbWidth / 2);
+    adjustedX = Math.max(0, Math.min(adjustedX, clickableWidth));
+    
+    const percentage = clickableWidth > 0 ? adjustedX / clickableWidth : 0;
+    const minVal = parseFloat(min);
+    const maxVal = parseFloat(max);
+    const stepVal = parseFloat(step) || 1;
+    let val = minVal + percentage * (maxVal - minVal);
+    
+    // Snap to step
+    const inv = 1.0 / stepVal;
+    val = Math.round(val * inv) / inv;
+    // ensure it stays in bounds
+    val = Math.max(minVal, Math.min(maxVal, val));
+
+    setHoverVal(val);
+    
+    // Map the hoverX percentage relative to the entire track for positioning the tooltip
+    // Tooltip should center over the thumb's center
+    const tooltipX = (adjustedX + (thumbWidth / 2)) / rect.width * 100;
+    setHoverX(tooltipX);
+  };
+
+  return (
+    <div style={{ position: 'relative', width: '100%', ...style }} ref={containerRef}>
+      {hoverVal !== null && (
+        <div style={{
+          position: 'absolute',
+          top: '-28px',
+          left: `${hoverX}%`,
+          transform: 'translateX(-50%)',
+          backgroundColor: '#3b82f6',
+          color: 'white',
+          padding: '2px 8px',
+          borderRadius: '6px',
+          fontSize: '0.75rem',
+          fontWeight: 'bold',
+          pointerEvents: 'none',
+          whiteSpace: 'nowrap',
+          zIndex: 10,
+          boxShadow: '0 4px 6px rgba(0,0,0,0.3)',
+          border: '1px solid rgba(255,255,255,0.2)'
+        }}>
+          {displayFormat(hoverVal)}
+          <div style={{
+            position: 'absolute',
+            bottom: '-5px',
+            left: '50%',
+            transform: 'translateX(-50%)',
+            borderLeft: '5px solid transparent',
+            borderRight: '5px solid transparent',
+            borderTop: '5px solid #3b82f6',
+          }} />
+        </div>
+      )}
+      <input 
+        id={id}
+        type="range" 
+        min={min} 
+        max={max} 
+        step={step} 
+        value={value} 
+        onChange={onChange}
+        onPointerDown={onPointerDown}
+        disabled={disabled}
+        onMouseMove={handleMouseMove}
+        onMouseLeave={() => setHoverVal(null)}
+        style={{ width: '100%', margin: 0 }} 
+      />
+    </div>
+  );
+};
+
 function App() {
   const [svgUrl, setSvgUrl] = useState<string | null>(null);
   const [rawSvgContent, setRawSvgContent] = useState<string | null>(null);
@@ -786,7 +872,7 @@ function App() {
                   <label htmlFor="color-count">Image Colors To Extract</label>
                   <span>{colorCount}</span>
                 </div>
-                <input id="color-count" type="range" min="2" max="256" step="1" value={colorCount} onChange={handleColorCountChange} style={{ width: '100%' }} />
+                <HoverSlider id="color-count" min="2" max="256" step="1" value={colorCount} onChange={handleColorCountChange} displayFormat={(v: number) => Math.round(v).toString()} />
               </div>
             )}
 
@@ -869,14 +955,13 @@ function App() {
                   <span>Select by Size (Max Area)</span>
                   <span>{selectSizeThreshold}</span>
                 </div>
-                <input 
-                  type="range" 
+                <HoverSlider 
                   min="0" 
                   max="10000" 
                   step="10" 
                   value={selectSizeThreshold} 
-                  onChange={(e) => handleSelectBySizeChange(parseFloat(e.target.value))} 
-                  style={{ width: '100%' }} 
+                  onChange={(e: any) => handleSelectBySizeChange(parseFloat(e.target.value))} 
+                  displayFormat={(v: number) => Math.round(v).toString()}
                 />
               </div>
               
@@ -967,7 +1052,7 @@ function App() {
                   <label htmlFor="depth-slider" style={{ fontSize: '0.9rem', fontWeight: 600, color: '#60a5fa', margin: 0, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Extrusion Depth</label>
                   <span style={{ fontSize: '1.2rem', fontWeight: 700, color: '#f8fafc' }}>{currentDepth.toFixed(1)}</span>
                 </div>
-                <input id="depth-slider" type="range" min="0" max="20" step="0.1" value={currentDepth} onChange={handleDepthChange} onPointerDown={handleDepthPointerDown} disabled={selectedMeshIds.length === 0} style={{ width: '100%' }} />
+                <HoverSlider id="depth-slider" min="0" max="20" step="0.1" value={currentDepth} onChange={handleDepthChange} onPointerDown={handleDepthPointerDown} disabled={selectedMeshIds.length === 0} />
               </div>
 
               <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginBottom: '1rem' }}>
@@ -1013,15 +1098,15 @@ function App() {
               <div style={{ fontSize: '0.85rem', fontWeight: 600, color: '#f8fafc', marginBottom: '0.5rem' }}>3. Shape Generation</div>
               
               <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                {/* EXTRACT INNER PARTS */}
+                {/* CREATE BASE PLATE */}
                 <div style={{ padding: '0.5rem', backgroundColor: 'rgba(0,0,0,0.2)', borderRadius: '4px' }}>
                   <button
-                    style={{ width: '100%', fontSize: '0.75rem', padding: '0.5rem', backgroundColor: '#06b6d4', border: 'none', color: 'white', borderRadius: '4px', cursor: isExtracting ? 'not-allowed' : 'pointer' }}
-                    onClick={handleExtractInner}
-                    disabled={isExtracting}
-                    title="If this shape has enclosed holes inside it, this will extract them into solid pieces"
+                    style={{ width: '100%', fontSize: '0.75rem', padding: '0.5rem', backgroundColor: '#8b5cf6', border: 'none', color: 'white', borderRadius: '4px', cursor: isBasePlating ? 'not-allowed' : 'pointer' }}
+                    onClick={handleCreateBasePlate}
+                    disabled={isBasePlating}
+                    title="Generate a perfectly fitted solid puzzle-piece base that sits beneath these strokes"
                   >
-                    {isExtracting ? extractStatus || "Working..." : "Fill Enclosed Holes"}
+                    {isBasePlating ? basePlateStatus || "Working..." : "Fill Body (Base Plate)"}
                   </button>
                 </div>
 
@@ -1031,7 +1116,7 @@ function App() {
                     <span>Create Outline Border</span>
                     <span>{borderWidth.toFixed(1)}px</span>
                   </div>
-                  <input type="range" min="0.1" max="5" step="0.1" value={borderWidth} onChange={(e) => setBorderWidth(parseFloat(e.target.value))} style={{ width: '100%' }} />
+                  <HoverSlider min="0.1" max="5" step="0.1" value={borderWidth} onChange={(e: any) => setBorderWidth(parseFloat(e.target.value))} />
                   <button
                     style={{ width: '100%', fontSize: '0.75rem', padding: '0.5rem', backgroundColor: '#eab308', marginTop: '6px', border: 'none', color: 'white', borderRadius: '4px', cursor: isBordering ? 'not-allowed' : 'pointer' }}
                     onClick={handleCreateBorder}
@@ -1051,15 +1136,15 @@ function App() {
               
               <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginTop: '0.5rem', opacity: selectedMeshIds.length > 0 ? 1 : 0.5, pointerEvents: selectedMeshIds.length > 0 ? 'auto' : 'none' }}>
                 
-                {/* CREATE BASE PLATE */}
+                {/* EXTRACT INNER PARTS */}
                 <div style={{ padding: '0.5rem', backgroundColor: 'rgba(0,0,0,0.2)', borderRadius: '4px' }}>
                   <button
-                    style={{ width: '100%', fontSize: '0.75rem', padding: '0.5rem', backgroundColor: '#8b5cf6', border: 'none', color: 'white', borderRadius: '4px', cursor: isBasePlating ? 'not-allowed' : 'pointer' }}
-                    onClick={handleCreateBasePlate}
-                    disabled={isBasePlating}
-                    title="Generate a perfectly fitted solid puzzle-piece base that sits beneath these strokes"
+                    style={{ width: '100%', fontSize: '0.75rem', padding: '0.5rem', backgroundColor: '#06b6d4', border: 'none', color: 'white', borderRadius: '4px', cursor: isExtracting ? 'not-allowed' : 'pointer' }}
+                    onClick={handleExtractInner}
+                    disabled={isExtracting}
+                    title="If this shape has enclosed holes inside it, this will extract them into solid pieces"
                   >
-                    {isBasePlating ? basePlateStatus || "Working..." : "Fill Body (Base Plate)"}
+                    {isExtracting ? extractStatus || "Working..." : "Fill Enclosed Holes"}
                   </button>
                 </div>
 
@@ -1119,7 +1204,7 @@ function App() {
                     <span>Expand (Fill Gaps)</span>
                     <span>{expandAmount.toFixed(1)}px</span>
                   </div>
-                  <input type="range" min="0.1" max="5" step="0.1" value={expandAmount} onChange={(e) => setExpandAmount(parseFloat(e.target.value))} style={{ width: '100%' }} />
+                  <HoverSlider min="0.1" max="5" step="0.1" value={expandAmount} onChange={(e: any) => setExpandAmount(parseFloat(e.target.value))} />
                   <button
                     style={{ width: '100%', fontSize: '0.75rem', padding: '0.5rem', backgroundColor: '#6366f1', marginTop: '6px', border: 'none', color: 'white', borderRadius: '4px', cursor: isExpanding ? 'not-allowed' : 'pointer' }}
                     onClick={handleExpandSelected}
@@ -1134,7 +1219,7 @@ function App() {
                     <span>Smooth Selected</span>
                     <span>{smoothAmount.toFixed(1)}</span>
                   </div>
-                  <input type="range" min="0.1" max="5" step="0.1" value={smoothAmount} onChange={(e) => setSmoothAmount(parseFloat(e.target.value))} style={{ width: '100%' }} />
+                  <HoverSlider min="0.1" max="5" step="0.1" value={smoothAmount} onChange={(e: any) => setSmoothAmount(parseFloat(e.target.value))} />
                   <button
                     style={{ width: '100%', fontSize: '0.75rem', padding: '0.5rem', backgroundColor: '#ec4899', marginTop: '6px', border: 'none', color: 'white', borderRadius: '4px', cursor: isSmoothing ? 'not-allowed' : 'pointer' }}
                     onClick={handleSmoothSelected}
@@ -1238,7 +1323,7 @@ function App() {
               <div>
                 <label className="checkbox-label" style={{ fontSize: '0.75rem', marginBottom: '0.25rem' }}>Scale Multiplier (%)</label>
                 <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-                  <input type="range" min="10" max="500" step="10" value={customScale} onChange={(e) => setCustomScale(Number(e.target.value))} style={{ flex: 1 }} />
+                  <div style={{ flex: 1 }}><HoverSlider min="10" max="500" step="10" value={customScale} onChange={(e: any) => setCustomScale(Number(e.target.value))} displayFormat={(v: number) => `${Math.round(v)}%`} /></div>
                   <span style={{ fontSize: '0.75rem', width: '40px', color: 'white', textAlign: 'right' }}>{customScale}%</span>
                 </div>
                 <label className="checkbox-label" style={{ marginTop: '0.5rem', fontSize: '0.75rem' }}>
@@ -1258,7 +1343,7 @@ function App() {
                 <div style={{ paddingLeft: '1.5rem', marginTop: '-0.25rem', marginBottom: '0.25rem' }}>
                   <label className="checkbox-label" style={{ fontSize: '0.75rem', marginBottom: '0.25rem', color: '#94a3b8' }}>Assembly Clearance (mm)</label>
                   <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-                    <input type="range" min="0" max="0.5" step="0.05" value={clearance} onChange={(e) => setClearance(Number(e.target.value))} style={{ flex: 1 }} />
+                    <div style={{ flex: 1 }}><HoverSlider min="0" max="0.5" step="0.05" value={clearance} onChange={(e: any) => setClearance(Number(e.target.value))} displayFormat={(v: number) => v.toFixed(2)} /></div>
                     <span style={{ fontSize: '0.75rem', width: '30px', color: 'white', textAlign: 'right' }}>{clearance.toFixed(2)}</span>
                   </div>
                 </div>
