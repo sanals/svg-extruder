@@ -1,5 +1,5 @@
 import { useState, useRef, Suspense, useEffect, useCallback } from 'react';
-import { Upload, Download, Undo } from 'lucide-react';
+import { Upload, Download, Undo, Settings, LayoutGrid, Droplet, MoveVertical, Zap, Trash2, SplitSquareHorizontal, LayoutTemplate, Network, WrapText, Combine } from 'lucide-react';
 import { Canvas } from '@react-three/fiber';
 import { OrbitControls, Center } from '@react-three/drei';
 import * as THREE from 'three';
@@ -803,156 +803,126 @@ function App() {
 
   return (
     <>
-      <div className="sidebar" style={{ padding: '1rem', gap: '1rem', width: '320px' }}>
-        <h1 className="sidebar-header" style={{ marginBottom: '0.5rem' }}>SVG Extruder 3D</h1>
-
-        {/* GROUP 1: INPUT & SETUP */}
-        <div className="card">
-          <div className="card-header">Input & Setup</div>
-          <div className="card-body">
-            
-            {/* SAVE AND LOAD */}
-            <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.5rem' }}>
-              <label style={{ flex: 1, fontSize: '0.75rem', padding: '0.5rem', backgroundColor: '#334155', borderRadius: '4px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', border: '1px solid #475569' }}>
-                Load Project
-                <input type="file" accept=".svgproj" onChange={handleLoadProject} style={{ display: 'none' }} />
-              </label>
-              <button onClick={handleSaveProject} disabled={!rawSvgContent} style={{ flex: 1, fontSize: '0.75rem', padding: '0.5rem', backgroundColor: '#334155', borderRadius: '4px', color: 'white', border: '1px solid #475569', cursor: rawSvgContent ? 'pointer' : 'not-allowed', opacity: rawSvgContent ? 1 : 0.5 }}>
-                Save Project
-              </button>
-            </div>
-
-            <div style={{ display: 'flex', gap: '0.5rem' }}>
-              <label htmlFor="image-upload" style={{ flex: 1, cursor: 'pointer' }}>
-                <div role="button" className="btn-upload" style={{
-                  backgroundColor: '#3b82f6', color: 'white', padding: '0.6em 0', borderRadius: '8px',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.4rem', fontWeight: 500, fontSize: '0.85rem',
-                  transition: 'background-color 0.2s'
-                }} onMouseOver={(e) => e.currentTarget.style.backgroundColor = '#2563eb'} onMouseOut={(e) => e.currentTarget.style.backgroundColor = '#3b82f6'}>
-                  <Upload size={16} /> Image
-                </div>
-                <input id="image-upload" type="file" accept=".png, .jpg, .jpeg, .webp" onChange={handleFileUpload} style={{ display: 'none' }} />
-              </label>
-
-              <label htmlFor="svg-upload" style={{ flex: 1, cursor: 'pointer' }}>
-                <div role="button" className="btn-upload" style={{
-                  backgroundColor: '#10b981', color: 'white', padding: '0.6em 0', borderRadius: '8px',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.4rem', fontWeight: 500, fontSize: '0.85rem',
-                  transition: 'background-color 0.2s'
-                }} onMouseOver={(e) => e.currentTarget.style.backgroundColor = '#059669'} onMouseOut={(e) => e.currentTarget.style.backgroundColor = '#10b981'}>
-                  <Upload size={16} /> SVG
-                </div>
-                <input id="svg-upload" type="file" accept=".svg" onChange={handleFileUpload} style={{ display: 'none' }} />
-              </label>
-            </div>
-
-            {svgUrl && (
-              <button
-                 onClick={() => {
-                   const link = document.createElement('a');
-                   link.href = svgUrl;
-                   link.download = 'vectorized.svg';
-                   link.click();
-                 }}
-                 style={{
-                   width: '100%', padding: '0.4rem', backgroundColor: '#334155', color: 'white', border: '1px solid rgba(255,255,255,0.1)',
-                   borderRadius: '6px', cursor: 'pointer', fontSize: '0.75rem', display: 'flex', alignItems: 'center',
-                   justifyContent: 'center', gap: '0.4rem', transition: 'background-color 0.2s'
-                 }}
-                 onMouseOver={(e) => e.currentTarget.style.backgroundColor = '#475569'}
-                 onMouseOut={(e) => e.currentTarget.style.backgroundColor = '#334155'}
-              >
-                <Download size={14} /> Download 2D SVG
-              </button>
-            )}
-
-            {imageDataUrl && (
-              <div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', color: '#94a3b8', marginBottom: '0.25rem' }}>
-                  <label htmlFor="color-count">Image Colors To Extract</label>
-                  <span>{colorCount}</span>
-                </div>
-                <HoverSlider id="color-count" min="2" max="256" step="1" value={colorCount} onChange={handleColorCountChange} displayFormat={(v: number) => Math.round(v).toString()} />
-              </div>
-            )}
-
+      <div className="top-nav">
+        <h1 className="sidebar-header" style={{ margin: 0, fontSize: '1.25rem' }}>SVG Extruder 3D</h1>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
             {vertexCount > 0 && (
-              <div style={{ padding: '0.75rem', borderRadius: '6px', backgroundColor: 'rgba(0,0,0,0.2)', border: '1px solid rgba(255,255,255,0.05)' }}>
-                <div style={{ fontSize: '0.75rem', color: '#94a3b8' }}>Model Complexity</div>
-                <div style={{ fontSize: '1rem', fontWeight: 600, color: '#e2e8f0', marginTop: '0.25rem' }}>{vertexCount.toLocaleString()} Vertices</div>
-                {vertexCount > 100000 && (
-                  <div style={{ fontSize: '0.7rem', color: '#ef4444', marginTop: '0.25rem' }}>High vertex count may cause performance issues.</div>
-                )}
+              <div style={{ padding: '0.25rem 0.75rem', borderRadius: '6px', backgroundColor: 'rgba(0,0,0,0.2)', border: '1px solid rgba(255,255,255,0.05)', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+                <div style={{ fontSize: '0.85rem', fontWeight: 600, color: vertexCount > 100000 ? '#ef4444' : '#e2e8f0' }}>{vertexCount.toLocaleString()} Vertices</div>
               </div>
             )}
-          </div>
-        </div>
-
-        {/* GROUP 2: GEOMETRY SETTINGS */}
-        <div className="card">
-          <div className="card-header">Geometry Settings</div>
-          <div className="card-body" style={{ gap: '0.5rem' }}>
-            <label className="checkbox-label" htmlFor="seal-gaps">
-              <input id="seal-gaps" type="checkbox" checked={sealGaps} onChange={(e) => setSealGaps(e.target.checked)} />
-              Seal gaps (adds slight bevel)
-            </label>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
-              <label className="checkbox-label" htmlFor="cut-overlaps" style={{ cursor: svgUrl ? 'not-allowed' : 'pointer', opacity: svgUrl ? 0.5 : 1 }}>
-                <input id="cut-overlaps" type="checkbox" checked={cutOverlaps} onChange={(e) => setCutOverlaps(e.target.checked)} disabled={!!svgUrl} />
-                Cut overlaps (puzzle pieces)
-              </label>
-              {svgUrl && (
-                <span style={{ fontSize: '0.65rem', color: '#ef4444', paddingLeft: '1.5rem' }}>
-                  Must be set before uploading SVG.
-                </span>
-              )}
-            </div>
-          </div>
-        </div>
-
-        {/* GROUP 3: SELECTION & EDITING */}
-        <div className="card">
-          <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            Selection & Editing
             <button
               onClick={handleUndo}
               disabled={history.length === 0}
               style={{
-                padding: '0.2rem 0.5rem', display: 'flex', alignItems: 'center', gap: '0.25rem', fontSize: '0.7rem',
+                padding: '0.4rem 0.75rem', display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.8rem',
                 backgroundColor: history.length > 0 ? '#3b82f6' : 'transparent',
                 color: history.length > 0 ? 'white' : '#64748b',
                 border: history.length > 0 ? 'none' : '1px solid rgba(255,255,255,0.1)',
-                borderRadius: '4px', cursor: history.length > 0 ? 'pointer' : 'not-allowed'
+                borderRadius: '6px', cursor: history.length > 0 ? 'pointer' : 'not-allowed'
               }}
               title="Undo last change (Ctrl+Z)"
             >
-              <Undo size={10} /> Undo
+              <Undo size={14} /> Undo
             </button>
-          </div>
-          <div className="card-body" style={{ gap: '1.25rem' }}>
-            
-            {/* SECTION 1: SELECTION TOOLS */}
-            <div>
-              <div style={{ fontSize: '0.85rem', fontWeight: 600, color: '#f8fafc', marginBottom: '0.5rem' }}>1. Selection Tools</div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', marginTop: '0.25rem' }}>
-                  <span style={{ fontSize: '0.75rem', color: '#94a3b8', marginBottom: '0.2rem' }}>Highlight Style:</span>
-                  <div className="segmented-control">
-                    <label>
-                      <input type="radio" name="highlightStyle" checked={highlightStyle === 'dashed'} onChange={() => setHighlightStyle('dashed')} /> 
-                      <span>Dashed</span>
-                    </label>
-                    <label>
-                      <input type="radio" name="highlightStyle" checked={highlightStyle === 'solid'} onChange={() => setHighlightStyle('solid')} /> 
-                      <span>Striped</span>
-                    </label>
-                  </div>
-                </div>
+        </div>
+      </div>
+
+      <div className="app-main">
+        {/* LEFT SIDEBAR */}
+        <div className="left-sidebar">
+          
+          <div className="card">
+            <div className="card-header"><Settings size={14} style={{ marginRight: '6px' }}/> Input & Setup</div>
+            <div className="card-body">
+              <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.5rem' }}>
+                <label style={{ flex: 1, fontSize: '0.75rem', padding: '0.5rem', backgroundColor: '#334155', borderRadius: '4px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', border: '1px solid #475569' }}>
+                  Load Project
+                  <input type="file" accept=".svgproj" onChange={handleLoadProject} style={{ display: 'none' }} />
+                </label>
+                <button onClick={handleSaveProject} disabled={!rawSvgContent} style={{ flex: 1, fontSize: '0.75rem', padding: '0.5rem', backgroundColor: '#334155', borderRadius: '4px', color: 'white', border: '1px solid #475569', cursor: rawSvgContent ? 'pointer' : 'not-allowed', opacity: rawSvgContent ? 1 : 0.5 }}>
+                  Save Project
+                </button>
               </div>
 
-              <div style={{ marginTop: '0.5rem', padding: '0.5rem', backgroundColor: 'rgba(0,0,0,0.2)', borderRadius: '4px' }}>
+              <div style={{ display: 'flex', gap: '0.5rem' }}>
+                <label htmlFor="image-upload" style={{ flex: 1, cursor: 'pointer' }}>
+                  <div role="button" className="btn-upload" style={{
+                    backgroundColor: '#3b82f6', color: 'white', padding: '0.6em 0', borderRadius: '8px',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.4rem', fontWeight: 500, fontSize: '0.85rem',
+                    transition: 'background-color 0.2s'
+                  }} onMouseOver={(e) => e.currentTarget.style.backgroundColor = '#2563eb'} onMouseOut={(e) => e.currentTarget.style.backgroundColor = '#3b82f6'}>
+                    <Upload size={16} /> Image
+                  </div>
+                  <input id="image-upload" type="file" accept=".png, .jpg, .jpeg, .webp" onChange={handleFileUpload} style={{ display: 'none' }} />
+                </label>
+
+                <label htmlFor="svg-upload" style={{ flex: 1, cursor: 'pointer' }}>
+                  <div role="button" className="btn-upload" style={{
+                    backgroundColor: '#10b981', color: 'white', padding: '0.6em 0', borderRadius: '8px',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.4rem', fontWeight: 500, fontSize: '0.85rem',
+                    transition: 'background-color 0.2s'
+                  }} onMouseOver={(e) => e.currentTarget.style.backgroundColor = '#059669'} onMouseOut={(e) => e.currentTarget.style.backgroundColor = '#10b981'}>
+                    <Upload size={16} /> SVG
+                  </div>
+                  <input id="svg-upload" type="file" accept=".svg" onChange={handleFileUpload} style={{ display: 'none' }} />
+                </label>
+              </div>
+
+              {svgUrl && (
+                <button
+                   onClick={() => {
+                     const link = document.createElement('a');
+                     link.href = svgUrl;
+                     link.download = 'vectorized.svg';
+                     link.click();
+                   }}
+                   style={{
+                     width: '100%', padding: '0.4rem', backgroundColor: '#334155', color: 'white', border: '1px solid rgba(255,255,255,0.1)',
+                     borderRadius: '6px', cursor: 'pointer', fontSize: '0.75rem', display: 'flex', alignItems: 'center',
+                     justifyContent: 'center', gap: '0.4rem', transition: 'background-color 0.2s', marginTop: '0.5rem'
+                   }}
+                   onMouseOver={(e) => e.currentTarget.style.backgroundColor = '#475569'}
+                   onMouseOut={(e) => e.currentTarget.style.backgroundColor = '#334155'}
+                >
+                  <Download size={14} /> Download 2D SVG
+                </button>
+              )}
+
+              {imageDataUrl && (
+                <div style={{ marginTop: '0.5rem' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', color: '#94a3b8', marginBottom: '0.25rem' }}>
+                    <label htmlFor="color-count">Image Colors To Extract</label>
+                    <span>{colorCount}</span>
+                  </div>
+                  <HoverSlider id="color-count" min="2" max="256" step="1" value={colorCount} onChange={handleColorCountChange} displayFormat={(v: number) => Math.round(v).toString()} />
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="card">
+            <div className="card-header"><LayoutGrid size={14} style={{ marginRight: '6px' }}/> Geometry Settings</div>
+            <div className="card-body" style={{ gap: '0.5rem' }}>
+              <label className="checkbox-label" htmlFor="seal-gaps">
+                <input id="seal-gaps" type="checkbox" checked={sealGaps} onChange={(e) => setSealGaps(e.target.checked)} />
+                Seal gaps (adds slight bevel)
+              </label>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                <label className="checkbox-label" htmlFor="cut-overlaps" style={{ cursor: svgUrl ? 'not-allowed' : 'pointer', opacity: svgUrl ? 0.5 : 1 }}>
+                  <input id="cut-overlaps" type="checkbox" checked={cutOverlaps} onChange={(e) => setCutOverlaps(e.target.checked)} disabled={!!svgUrl} />
+                  Cut overlaps (puzzle pieces)
+                </label>
+                {svgUrl && (
+                  <span style={{ fontSize: '0.65rem', color: '#ef4444', paddingLeft: '1.5rem' }}>
+                    Must be set before uploading SVG.
+                  </span>
+                )}
+              </div>
+              <hr style={{ border: 'none', borderTop: '1px solid rgba(255,255,255,0.1)', margin: '0.5rem 0' }} />
+              <div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', marginBottom: '4px', color: '#cbd5e1' }}>
-                  <span>Select by Size (Max Area)</span>
+                  <span>Quick Select by Size</span>
                   <span>{selectSizeThreshold}</span>
                 </div>
                 <HoverSlider 
@@ -964,216 +934,422 @@ function App() {
                   displayFormat={(v: number) => Math.round(v).toString()}
                 />
               </div>
-              
-              {uniqueColors.length > 0 && (
-                <div style={{ marginTop: '0.5rem' }}>
-                  <label style={{ fontSize: '0.75rem', color: '#94a3b8', display: 'block', marginBottom: '0.5rem' }}>
-                    Select By Image Colors
-                  </label>
-                  <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.5rem' }}>
-                    <button onClick={() => setSelectedMeshIds(currentMeshColors.map(m => m.id))} style={{ fontSize: '0.7rem', padding: '0.25rem 0.5rem', flex: 1, backgroundColor: '#3b82f6' }}>Select All</button>
-                    <button onClick={() => setSelectedMeshIds([])} style={{ fontSize: '0.7rem', padding: '0.25rem 0.5rem', flex: 1, backgroundColor: '#64748b' }}>Deselect All</button>
-                  </div>
-                  <div className="colors-scroll-container" style={{
-                    display: 'flex', flexWrap: 'wrap', gap: '0.5rem', height: '140px', minHeight: '60px', maxHeight: '40vh',
-                    overflowY: 'auto', alignContent: 'flex-start', padding: '0.5rem', resize: 'vertical',
-                    border: '1px solid rgba(255,255,255,0.1)', borderRadius: '6px', backgroundColor: 'rgba(0,0,0,0.2)'
-                  }}>
-                    {uniqueColors.map(colorHex => {
-                      const idsOfColor = currentMeshColors.filter(m => m.colorHex === colorHex).map(m => m.id);
-                      const isAllSelected = idsOfColor.length > 0 && idsOfColor.every(id => selectedMeshIds.includes(id));
-                      const isPartiallySelected = !isAllSelected && idsOfColor.some(id => selectedMeshIds.includes(id));
-
-                      return (
-                        <div
-                          key={colorHex}
-                          onClick={() => toggleColorSelection(colorHex)}
-                          style={{
-                            width: '28px', height: '28px', backgroundColor: `#${colorHex}`, borderRadius: '6px',
-                            cursor: 'pointer', border: isAllSelected ? '2px solid #fff' : isPartiallySelected ? '2px solid #60a5fa' : '1px solid rgba(255,255,255,0.2)',
-                            boxShadow: (isAllSelected || isPartiallySelected) ? '0 0 0 2px rgba(59,130,246,0.5)' : 'none',
-                            position: 'relative', boxSizing: 'border-box', transition: 'transform 0.1s'
-                          }}
-                          onMouseEnter={(e) => e.currentTarget.style.transform = 'scale(1.1)'}
-                          onMouseLeave={(e) => e.currentTarget.style.transform = 'scale(1)'}
-                          title={`#${colorHex}`}
-                        >
-                          {isAllSelected && (
-                            <div style={{
-                              position: 'absolute', top: '-6px', right: '-6px', background: '#3b82f6', color: 'white',
-                              borderRadius: '50%', width: '14px', height: '14px', display: 'flex', alignItems: 'center',
-                              justifyContent: 'center', fontSize: '9px', fontWeight: 'bold'
-                            }}>✓</div>
-                          )}
-                          {isPartiallySelected && (
-                            <div style={{
-                              position: 'absolute', top: '-6px', right: '-6px', background: '#64748b', color: 'white',
-                              borderRadius: '50%', width: '14px', height: '14px', display: 'flex', alignItems: 'center',
-                              justifyContent: 'center', fontSize: '12px', fontWeight: 'bold', lineHeight: 1
-                            }}>-</div>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-              
-              {selectedUniqueColors.length === 1 && !isMerging && (
-                <button onClick={handleAutoSelectSimilar} style={{ width: '100%', marginTop: '0.5rem', fontSize: '0.75rem', padding: '0.5rem', backgroundColor: '#10b981', border: 'none', color: 'white', borderRadius: '4px', cursor: 'pointer' }}>
-                  Auto-Select Similar Colors
-                </button>
-              )}
-
-              {selectedMeshIds.length > 1 && !isMerging && !isFusingSelection && (
-                <button onClick={initiateFuse} style={{ width: '100%', marginTop: '0.5rem', fontSize: '0.75rem', padding: '0.5rem', backgroundColor: '#f97316', border: 'none', color: 'white', borderRadius: '4px', cursor: 'pointer' }} title="Mathematically fuse touching parts into a single seamless polygon">
-                  Fuse Touching Parts
-                </button>
-              )}
-
-              <button
-                style={{ width: '100%', marginTop: '0.5rem', fontSize: '0.75rem', padding: '0.5rem', backgroundColor: 'rgba(239, 68, 68, 0.2)', border: '1px solid rgba(239, 68, 68, 0.5)', color: '#fca5a5', borderRadius: '4px', cursor: 'pointer', transition: 'all 0.2s' }}
-                onClick={handleDeleteSelected}
-                onMouseOver={(e) => { e.currentTarget.style.backgroundColor = '#ef4444'; e.currentTarget.style.color = 'white'; }}
-                onMouseOut={(e) => { e.currentTarget.style.backgroundColor = 'rgba(239, 68, 68, 0.2)'; e.currentTarget.style.color = '#fca5a5'; }}
-              >
-                Delete Selected Parts
-              </button>
             </div>
+          </div>
 
-            <hr style={{ border: 'none', borderTop: '1px solid rgba(255,255,255,0.1)', margin: '0.5rem 0' }} />
-
-            {/* SECTION 2: BASIC PROPERTIES */}
-            <div style={{ opacity: selectedMeshIds.length > 0 ? 1 : 0.5, pointerEvents: selectedMeshIds.length > 0 ? 'auto' : 'none' }}>
-              <div style={{ fontSize: '0.85rem', fontWeight: 600, color: '#f8fafc', marginBottom: '0.5rem' }}>2. Basic Properties</div>
-              
-              <div style={{ marginBottom: '1.25rem', padding: '1rem', backgroundColor: 'rgba(59, 130, 246, 0.1)', border: '1px solid rgba(59, 130, 246, 0.3)', borderRadius: '8px', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
-                  <label htmlFor="depth-slider" style={{ fontSize: '0.9rem', fontWeight: 600, color: '#60a5fa', margin: 0, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Extrusion Depth</label>
-                  <span style={{ fontSize: '1.2rem', fontWeight: 700, color: '#f8fafc' }}>{currentDepth.toFixed(1)}</span>
+          {uniqueColors.length > 0 && (
+            <div className="card">
+              <div className="card-header"><Droplet size={14} style={{ marginRight: '6px' }}/> Global Color Palette</div>
+              <div className="card-body">
+                <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.5rem' }}>
+                  <button onClick={() => setSelectedMeshIds(currentMeshColors.map(m => m.id))} style={{ fontSize: '0.7rem', padding: '0.25rem 0.5rem', flex: 1, backgroundColor: '#3b82f6' }}>Select All</button>
+                  <button onClick={() => setSelectedMeshIds([])} style={{ fontSize: '0.7rem', padding: '0.25rem 0.5rem', flex: 1, backgroundColor: '#64748b' }}>Deselect All</button>
                 </div>
-                <HoverSlider id="depth-slider" min="0" max="20" step="0.1" value={currentDepth} onChange={handleDepthChange} onPointerDown={handleDepthPointerDown} disabled={selectedMeshIds.length === 0} />
-              </div>
+                <div className="colors-scroll-container" style={{
+                  display: 'flex', flexWrap: 'wrap', gap: '0.5rem', height: '140px', minHeight: '60px', maxHeight: '40vh',
+                  overflowY: 'auto', alignContent: 'flex-start', padding: '0.5rem', resize: 'vertical',
+                  border: '1px solid rgba(255,255,255,0.1)', borderRadius: '6px', backgroundColor: 'rgba(0,0,0,0.2)'
+                }}>
+                  {uniqueColors.map(colorHex => {
+                    const idsOfColor = currentMeshColors.filter(m => m.colorHex === colorHex).map(m => m.id);
+                    const isAllSelected = idsOfColor.length > 0 && idsOfColor.every(id => selectedMeshIds.includes(id));
+                    const isPartiallySelected = !isAllSelected && idsOfColor.some(id => selectedMeshIds.includes(id));
 
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginBottom: '1rem' }}>
-                <div style={{ fontSize: '0.8rem', color: '#94a3b8' }}>Custom Color Override:</div>
-                <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-                  <input 
-                    type="color" 
-                    value={`#${selectedUniqueColors.length === 1 ? selectedUniqueColors[0] : 'ffffff'}`} 
-                    onBlur={handleCustomColorChange}
-                    onChange={() => {}} // React controlled input needs an onChange, but we'll apply it onBlur to avoid lag
-                    style={{ width: '32px', height: '32px', border: 'none', padding: 0, background: 'transparent', cursor: 'pointer' }}
-                    title="Pick a custom color (applies when picker is closed)"
-                  />
-                  <div style={{ flex: 1, display: 'flex', gap: '4px', overflowX: 'auto', padding: '2px 0' }}>
-                    {uniqueColors.slice(0, 10).map(colorHex => (
-                      <div 
-                        key={`palette-${colorHex}`}
-                        onClick={() => {
-                          if (selectedMeshIds.length === 0) return;
-                          setMeshColorOverrides(prev => {
-                            const next = { ...prev };
-                            selectedMeshIds.forEach(id => next[id] = colorHex);
-                            return next;
-                          });
-                          pushToHistory();
-                        }}
+                    return (
+                      <div
+                        key={colorHex}
+                        onClick={() => toggleColorSelection(colorHex)}
                         style={{
-                          minWidth: '20px', height: '20px', backgroundColor: `#${colorHex}`, borderRadius: '4px', cursor: 'pointer', border: '1px solid rgba(255,255,255,0.2)'
+                          width: '28px', height: '28px', backgroundColor: `#${colorHex}`, borderRadius: '6px',
+                          cursor: 'pointer', border: isAllSelected ? '2px solid #fff' : isPartiallySelected ? '2px solid #60a5fa' : '1px solid rgba(255,255,255,0.2)',
+                          boxShadow: (isAllSelected || isPartiallySelected) ? '0 0 0 2px rgba(59,130,246,0.5)' : 'none',
+                          position: 'relative', boxSizing: 'border-box', transition: 'transform 0.1s'
                         }}
-                        title={`Apply #${colorHex}`}
-                      />
-                    ))}
-                  </div>
+                        onMouseEnter={(e) => e.currentTarget.style.transform = 'scale(1.1)'}
+                        onMouseLeave={(e) => e.currentTarget.style.transform = 'scale(1)'}
+                        title={`#${colorHex}`}
+                      >
+                        {isAllSelected && (
+                          <div style={{
+                            position: 'absolute', top: '-6px', right: '-6px', background: '#3b82f6', color: 'white',
+                            borderRadius: '50%', width: '14px', height: '14px', display: 'flex', alignItems: 'center',
+                            justifyContent: 'center', fontSize: '9px', fontWeight: 'bold'
+                          }}>✓</div>
+                        )}
+                        {isPartiallySelected && (
+                          <div style={{
+                            position: 'absolute', top: '-6px', right: '-6px', background: '#64748b', color: 'white',
+                            borderRadius: '50%', width: '14px', height: '14px', display: 'flex', alignItems: 'center',
+                            justifyContent: 'center', fontSize: '12px', fontWeight: 'bold', lineHeight: 1
+                          }}>-</div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
-              </div>
-
-            </div>
-
-            <hr style={{ border: 'none', borderTop: '1px solid rgba(255,255,255,0.1)', margin: '0.5rem 0' }} />
-
-            {/* SECTION 3: SHAPE GENERATION */}
-            <div style={{ opacity: selectedMeshIds.length > 0 ? 1 : 0.5, pointerEvents: selectedMeshIds.length > 0 ? 'auto' : 'none' }}>
-              <div style={{ fontSize: '0.85rem', fontWeight: 600, color: '#f8fafc', marginBottom: '0.5rem' }}>3. Shape Generation</div>
-              
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                {/* CREATE BASE PLATE */}
-                <div style={{ padding: '0.5rem', backgroundColor: 'rgba(0,0,0,0.2)', borderRadius: '4px' }}>
-                  <button
-                    style={{ width: '100%', fontSize: '0.75rem', padding: '0.5rem', backgroundColor: '#8b5cf6', border: 'none', color: 'white', borderRadius: '4px', cursor: isBasePlating ? 'not-allowed' : 'pointer' }}
-                    onClick={handleCreateBasePlate}
-                    disabled={isBasePlating}
-                    title="Generate a perfectly fitted solid puzzle-piece base that sits beneath these strokes"
-                  >
-                    {isBasePlating ? basePlateStatus || "Working..." : "Fill Body (Base Plate)"}
-                  </button>
-                </div>
-
-                {/* CREATE UNIFORM BORDER */}
-                <div style={{ padding: '0.5rem', backgroundColor: 'rgba(0,0,0,0.2)', borderRadius: '4px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.7rem', marginBottom: '4px', color: '#cbd5e1' }}>
-                    <span>Create Outline Border</span>
-                    <span>{borderWidth.toFixed(1)}px</span>
-                  </div>
-                  <HoverSlider min="0.1" max="5" step="0.1" value={borderWidth} onChange={(e: any) => setBorderWidth(parseFloat(e.target.value))} />
-                  <button
-                    style={{ width: '100%', fontSize: '0.75rem', padding: '0.5rem', backgroundColor: '#eab308', marginTop: '6px', border: 'none', color: 'white', borderRadius: '4px', cursor: isBordering ? 'not-allowed' : 'pointer' }}
-                    onClick={handleCreateBorder}
-                    disabled={isBordering}
-                  >
-                    {isBordering ? borderStatus || "Working..." : "Generate Border"}
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            {/* SECTION 4: ADVANCED TOOLS */}
-            <details style={{ marginTop: '0.5rem' }}>
-              <summary style={{ fontSize: '0.85rem', fontWeight: 600, color: '#f8fafc', cursor: 'pointer', padding: '0.5rem 0', userSelect: 'none' }}>
-                4. Advanced Tools
-              </summary>
-              
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginTop: '0.5rem', opacity: selectedMeshIds.length > 0 ? 1 : 0.5, pointerEvents: selectedMeshIds.length > 0 ? 'auto' : 'none' }}>
-                
-                {/* EXTRACT INNER PARTS */}
-                <div style={{ padding: '0.5rem', backgroundColor: 'rgba(0,0,0,0.2)', borderRadius: '4px' }}>
-                  <button
-                    style={{ width: '100%', fontSize: '0.75rem', padding: '0.5rem', backgroundColor: '#06b6d4', border: 'none', color: 'white', borderRadius: '4px', cursor: isExtracting ? 'not-allowed' : 'pointer' }}
-                    onClick={handleExtractInner}
-                    disabled={isExtracting}
-                    title="If this shape has enclosed holes inside it, this will extract them into solid pieces"
-                  >
-                    {isExtracting ? extractStatus || "Working..." : "Fill Enclosed Holes"}
-                  </button>
-                </div>
-
-                {selectedUniqueColors.length > 1 && !isMerging && (
-                  <button onClick={() => setIsMerging(true)} style={{ fontSize: '0.75rem', padding: '0.5rem', backgroundColor: '#8b5cf6' }}>
-                    Merge Selected Colors
+                {selectedUniqueColors.length === 1 && !isMerging && (
+                  <button onClick={handleAutoSelectSimilar} style={{ width: '100%', marginTop: '0.5rem', fontSize: '0.75rem', padding: '0.5rem', backgroundColor: '#10b981', border: 'none', color: 'white', borderRadius: '4px', cursor: 'pointer' }}>
+                    Auto-Select Similar Colors
                   </button>
                 )}
+
+                {/* --- MOVED FROM RIGHT SIDEBAR --- */}
                 
-                <div style={{ padding: '0.5rem', backgroundColor: 'rgba(0,0,0,0.2)', borderRadius: '4px' }}>
-                  <button
-                    style={{ width: '100%', fontSize: '0.75rem', padding: '0.5rem', backgroundColor: '#8b5cf6', border: 'none', color: 'white', borderRadius: '4px', cursor: isSplitting ? 'not-allowed' : 'pointer' }}
-                    onClick={handleSplitDisjoint}
-                    disabled={isSplitting}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginTop: '1rem' }}>
+                  <div style={{ fontSize: '0.8rem', color: '#94a3b8' }}>Custom Color Override:</div>
+                  <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', opacity: selectedMeshIds.length > 0 ? 1 : 0.5, pointerEvents: selectedMeshIds.length > 0 ? 'auto' : 'none' }}>
+                    <input 
+                      type="color" 
+                      value={`#${selectedUniqueColors.length === 1 ? selectedUniqueColors[0] : 'ffffff'}`} 
+                      onBlur={handleCustomColorChange}
+                      onChange={() => {}}
+                      style={{ width: '32px', height: '32px', border: 'none', padding: 0, background: 'transparent', cursor: 'pointer' }}
+                      title="Pick a custom color (applies when picker is closed)"
+                    />
+                    <div style={{ flex: 1, display: 'flex', gap: '4px', overflowX: 'auto', padding: '2px 0' }}>
+                      {uniqueColors.slice(0, 10).map(colorHex => (
+                        <div 
+                          key={`palette-${colorHex}`}
+                          onClick={() => {
+                            if (selectedMeshIds.length === 0) return;
+                            setMeshColorOverrides(prev => {
+                              const next = { ...prev };
+                              selectedMeshIds.forEach(id => next[id] = colorHex);
+                              return next;
+                            });
+                            pushToHistory();
+                          }}
+                          style={{
+                            minWidth: '20px', height: '20px', backgroundColor: `#${colorHex}`, borderRadius: '4px', cursor: 'pointer', border: '1px solid rgba(255,255,255,0.2)'
+                          }}
+                          title={`Apply #${colorHex}`}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                <div style={{ display: 'flex', gap: '0.5rem', marginTop: '1rem' }}>
+                  <button 
+                    onClick={initiateFuse} 
+                    disabled={selectedMeshIds.length <= 1 || isMerging || isFusingSelection}
+                    style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.25rem', fontSize: '0.7rem', padding: '0.5rem', backgroundColor: '#f97316', color: 'white', border: 'none', borderRadius: '4px', opacity: selectedMeshIds.length > 1 ? 1 : 0.5, cursor: selectedMeshIds.length > 1 ? 'pointer' : 'not-allowed' }} 
+                    title="Fuse Touching Parts"
                   >
-                    {isSplitting ? splitStatus || "Working..." : "Separate Disjoint Parts"}
+                    <Combine size={14} /> Fuse Parts
+                  </button>
+                  <button 
+                    onClick={() => setIsMerging(true)} 
+                    disabled={selectedUniqueColors.length <= 1 || isMerging}
+                    style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.25rem', fontSize: '0.7rem', padding: '0.5rem', backgroundColor: '#8b5cf6', color: 'white', border: 'none', borderRadius: '4px', opacity: selectedUniqueColors.length > 1 ? 1 : 0.5, cursor: selectedUniqueColors.length > 1 ? 'pointer' : 'not-allowed' }}
+                  >
+                    <WrapText size={14} /> Merge Colors
                   </button>
                 </div>
 
-                <div style={{ padding: '0.5rem', backgroundColor: 'rgba(0,0,0,0.2)', borderRadius: '4px' }}>
+                {isMerging && (
+                  <div style={{ marginTop: '0.75rem', backgroundColor: 'rgba(51,65,85,0.5)', padding: '0.75rem', borderRadius: '6px', border: '1px solid rgba(255,255,255,0.05)' }}>
+                    <div style={{ fontSize: '0.75rem', marginBottom: '0.75rem', color: '#cbd5e1' }}>Select target color to merge into:</div>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.75rem' }}>
+                      {selectedUniqueColors.map(colorHex => (
+                        <div key={`target-${colorHex}`} style={{ position: 'relative' }}>
+                          <div
+                            onClick={() => executeFuse(colorHex)}
+                            style={{
+                              width: '32px', height: '32px', backgroundColor: `#${colorHex}`, borderRadius: '50%',
+                              cursor: 'pointer', border: '2px solid rgba(255,255,255,0.2)', transition: 'transform 0.1s'
+                            }}
+                            onMouseEnter={(e) => e.currentTarget.style.transform = 'scale(1.1)'}
+                            onMouseLeave={(e) => e.currentTarget.style.transform = 'scale(1)'}
+                            title={`Merge into #${colorHex}`}
+                          />
+                          <div
+                            onClick={(e) => { e.stopPropagation(); removeColorFromSelection(colorHex); }}
+                            style={{
+                              position: 'absolute', top: '-4px', right: '-4px', width: '16px', height: '16px',
+                              backgroundColor: '#ef4444', color: 'white', borderRadius: '50%', display: 'flex',
+                              alignItems: 'center', justifyContent: 'center', fontSize: '10px', fontWeight: 'bold',
+                              cursor: 'pointer', border: '1px solid #1e293b'
+                            }}
+                            title="Remove color from selection"
+                          >✕</div>
+                        </div>
+                      ))}
+                    </div>
+                    <button onClick={() => setIsMerging(false)} style={{ marginTop: '0.75rem', fontSize: '0.7rem', padding: '0.3rem 0.5rem', backgroundColor: 'transparent', border: '1px solid #64748b', width: '100%' }}>
+                      Cancel Merge
+                    </button>
+                  </div>
+                  )}
+                {isFusingSelection && (
+                  <div style={{ marginTop: '0.75rem', backgroundColor: 'rgba(51,65,85,0.5)', padding: '0.75rem', borderRadius: '6px', border: '1px solid rgba(255,255,255,0.05)' }}>
+                    <div style={{ fontSize: '0.75rem', marginBottom: '0.75rem', color: '#cbd5e1' }}>Select color for the fused part:</div>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.75rem' }}>
+                      {selectedUniqueColors.map(colorHex => (
+                        <div key={`fuse-target-${colorHex}`} style={{ position: 'relative' }}>
+                          <div
+                            onClick={() => executeFuse(colorHex)}
+                            style={{
+                              width: '32px', height: '32px', backgroundColor: `#${colorHex}`, borderRadius: '50%',
+                              cursor: 'pointer', border: '2px solid rgba(255,255,255,0.2)', transition: 'transform 0.1s'
+                            }}
+                            onMouseEnter={(e) => e.currentTarget.style.transform = 'scale(1.1)'}
+                            onMouseLeave={(e) => e.currentTarget.style.transform = 'scale(1)'}
+                            title={`Make fused part #${colorHex}`}
+                          />
+                        </div>
+                      ))}
+                    </div>
+                    <button onClick={() => setIsFusingSelection(false)} style={{ marginTop: '0.75rem', fontSize: '0.7rem', padding: '0.3rem 0.5rem', backgroundColor: 'transparent', border: '1px solid #64748b', width: '100%' }}>
+                      Cancel Fuse
+                    </button>
+                  </div>
+                  )}
+
+              </div>
+            </div>
+          )}
+
+          <div className="card" style={{ marginTop: 'auto' }}>
+            <div className="card-header"><Download size={14} style={{ marginRight: '6px' }}/> Export Options</div>
+            <div className="card-body">
+              <div style={{ display: 'flex', gap: '0.75rem' }}>
+                <div style={{ flex: 1 }}>
+                  <label className="checkbox-label" style={{ fontSize: '0.75rem', marginBottom: '0.35rem', color: '#94a3b8' }}>Printer Profile</label>
+                  <select className="custom-select" value={printerProfile} onChange={(e) => setPrinterProfile(e.target.value as any)}>
+                    <option value="A1 Mini (180x180)">A1 Mini (180x180)</option>
+                    <option value="X1/P1/A1 (256x256)">X1/P1/A1 (256x256)</option>
+                  </select>
+                </div>
+                <div style={{ flex: 1 }}>
+                  <label className="checkbox-label" style={{ fontSize: '0.75rem', marginBottom: '0.35rem', color: '#94a3b8' }}>Export Layout</label>
+                  <select className="custom-select" value={gridSize} onChange={(e) => setGridSize(e.target.value)}>
+                    <option value="auto">Auto (Max 2x2)</option>
+                    <option value="1x1">1x1 Plate</option>
+                    <option value="2x2">2x2 Plates</option>
+                    <option value="1x2">1x2 (Vertical)</option>
+                    <option value="2x1">2x1 (Horizontal)</option>
+                  </select>
+                </div>
+              </div>
+
+              {gridSize === 'auto' && (
+                <div>
+                  <label className="checkbox-label" style={{ fontSize: '0.75rem', marginBottom: '0.25rem' }}>Scale Multiplier (%)</label>
+                  <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                    <div style={{ flex: 1 }}><HoverSlider min="10" max="500" step="10" value={customScale} onChange={(e: any) => setCustomScale(Number(e.target.value))} displayFormat={(v: number) => `${Math.round(v)}%`} /></div>
+                    <span style={{ fontSize: '0.75rem', width: '40px', color: 'white', textAlign: 'right' }}>{customScale}%</span>
+                  </div>
+                  <label className="checkbox-label" style={{ marginTop: '0.5rem', fontSize: '0.75rem' }}>
+                    <input type="checkbox" checked={scaleZProportionally} onChange={(e) => setScaleZProportionally(e.target.checked)} />
+                    Scale Depth Proportionally
+                  </label>
+                </div>
+              )}
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                <label className="checkbox-label" style={{ fontSize: '0.75rem' }}>
+                  <input type="checkbox" checked={mergeColors3MF} onChange={(e) => setMergeColors3MF(e.target.checked)} />
+                  Join objects by color for 3MF
+                </label>
+                
+                {!mergeColors3MF && (
+                  <div style={{ paddingLeft: '1.5rem', marginTop: '-0.25rem', marginBottom: '0.25rem' }}>
+                    <label className="checkbox-label" style={{ fontSize: '0.75rem', marginBottom: '0.25rem', color: '#94a3b8' }}>Assembly Clearance (mm)</label>
+                    <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                      <div style={{ flex: 1 }}><HoverSlider min="0" max="0.5" step="0.05" value={clearance} onChange={(e: any) => setClearance(Number(e.target.value))} displayFormat={(v: number) => v.toFixed(2)} /></div>
+                      <span style={{ fontSize: '0.75rem', width: '30px', color: 'white', textAlign: 'right' }}>{clearance.toFixed(2)}</span>
+                    </div>
+                  </div>
+                )}
+
+                <label className="checkbox-label" style={{ fontSize: '0.75rem' }}>
+                  <input type="checkbox" checked={mergeBeforeExport} onChange={(e) => setMergeBeforeExport(e.target.checked)} />
+                  Join objects for STL (Single Mesh)
+                </label>
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginTop: '0.5rem' }}>
+                <button disabled={!svgUrl || !!exportStatus} style={{ width: '100%', backgroundColor: '#ec4899' }} onClick={handleExport3MF}>
+                  <Download size={16} /> Export 3MF (Multi-Plate)
+                </button>
+                <button disabled={!svgUrl} style={{ width: '100%', backgroundColor: '#475569', fontSize: '0.8rem', padding: '0.5rem' }} onClick={handleExport}>
+                  <Download size={14} /> Export STL (Raw)
+                </button>
+              </div>
+            </div>
+          </div>
+
+        </div>
+
+        {/* MAIN CONTENT */}
+        <div className="main-content" style={{ position: 'relative' }}>
+          {(isTracing || fuseStatus || exportStatus) && (
+            <div style={{
+              position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+              backgroundColor: 'rgba(15, 23, 42, 0.8)', zIndex: 10,
+              display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center'
+            }}>
+              <div className="spinner" style={{
+                width: '40px', height: '40px', border: '4px solid #334155',
+                borderTop: '4px solid #3b82f6', borderRadius: '50%',
+                animation: 'spin 1s linear infinite', marginBottom: '1rem'
+              }} />
+              <div style={{ color: '#f8fafc', fontSize: '1.2rem', fontWeight: 'bold', textAlign: 'center' }}>
+                {exportStatus || fuseStatus || isTracing}
+              </div>
+              <style>{`@keyframes spin { 100% { transform: rotate(360deg); } }`}</style>
+            </div>
+          )}
+
+          {!svgUrl && !isTracing && !fuseStatus && (
+            <div className="empty-state">
+              Upload an SVG or Image to get started
+            </div>
+          )}
+
+          {svgUrl && (
+            <Canvas frameloop="demand" camera={{ position: [0, 0, 100], fov: 50 }} onPointerMissed={() => setSelectedMeshIds([])}>
+              <ambientLight intensity={0.5} />
+              <directionalLight position={[10, 10, 10]} intensity={1} castShadow />
+              <OrbitControls makeDefault />
+              <Suspense fallback={null}>
+                <Center>
+                  <group ref={sceneRef}>
+                    <SvgModel
+                      ref={svgModelRef}
+                      svgUrl={svgUrl}
+                      highlightStyle={highlightStyle}
+                      sealGaps={sealGaps}
+                      cutOverlaps={cutOverlaps}
+                      selectedMeshIds={selectedMeshIds}
+                      previewMeshIds={previewMeshIds}
+                      meshDepths={meshDepths}
+                      meshColorOverrides={meshColorOverrides}
+                      onSelect={(ids, shiftKey) => {
+                        setSelectedMeshIds(prev => {
+                          if (shiftKey) {
+                            const isAdding = !prev.includes(ids[0]);
+                            if (isAdding) {
+                              return [...new Set([...prev, ...ids])];
+                            } else {
+                              return prev.filter(i => !ids.includes(i));
+                            }
+                          } else {
+                            if (prev.length === ids.length && ids.every(i => prev.includes(i))) {
+                              return [];
+                            }
+                          }
+                          return ids;
+                        });
+                      }}
+                      onVerticesCalculated={setVertexCount}
+                      onParseProgress={(msg) => setIsTracing(msg)}
+                      onParseComplete={(extractedColors) => {
+                        setIsTracing(null);
+                        if (extractedColors) setMeshColors(extractedColors);
+                      }}
+                    />
+                  </group>
+                </Center>
+              </Suspense>
+            </Canvas>
+          )}
+        </div>
+
+        {/* RIGHT SIDEBAR (Contextual) */}
+        <div className="right-sidebar">
+          {selectedMeshIds.length > 0 ? (
+            <>
+              <div className="card" style={{ border: '1px solid #3b82f6', boxShadow: '0 0 15px rgba(59, 130, 246, 0.15)' }}>
+                <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span style={{ display: 'flex', alignItems: 'center' }}><Settings size={14} style={{ marginRight: '6px' }}/> Properties</span>
                   <button
-                    style={{ width: '100%', fontSize: '0.75rem', padding: '0.5rem', backgroundColor: '#4f46e5', border: 'none', color: 'white', borderRadius: '4px', cursor: isAbsorbingShards ? 'not-allowed' : 'pointer' }}
-                    onClick={handlePreviewShards}
-                    disabled={isAbsorbingShards}
+                    style={{ padding: '0.2rem', backgroundColor: 'transparent', border: 'none', color: '#ef4444', cursor: 'pointer' }}
+                    onClick={handleDeleteSelected}
+                    title="Delete Selected Parts"
                   >
-                    {isAbsorbingShards ? "Scanning..." : "Clean Edge Shards"}
+                    <Trash2 size={16} />
                   </button>
+                </div>
+                <div className="card-body">
+                  <div style={{ marginBottom: '1rem' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.25rem' }}>
+                      <label htmlFor="depth-slider" style={{ fontSize: '0.8rem', fontWeight: 600, color: '#60a5fa' }}>Extrusion Depth</label>
+                      <span style={{ fontSize: '1rem', fontWeight: 700, color: '#f8fafc' }}>{currentDepth.toFixed(1)}</span>
+                    </div>
+                    <HoverSlider id="depth-slider" min="0" max="20" step="0.1" value={currentDepth} onChange={handleDepthChange} onPointerDown={handleDepthPointerDown} disabled={selectedMeshIds.length === 0} />
+                  </div>
+
+
+
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+                    <span style={{ fontSize: '0.75rem', color: '#94a3b8' }}>Highlight Style:</span>
+                    <div className="segmented-control">
+                      <label>
+                        <input type="radio" name="highlightStyle" checked={highlightStyle === 'dashed'} onChange={() => setHighlightStyle('dashed')} /> 
+                        <span>Dashed</span>
+                      </label>
+                      <label>
+                        <input type="radio" name="highlightStyle" checked={highlightStyle === 'solid'} onChange={() => setHighlightStyle('solid')} /> 
+                        <span>Striped</span>
+                      </label>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="card">
+                <div className="card-header"><Zap size={14} style={{ marginRight: '6px' }}/> Quick Actions</div>
+                <div className="card-body">
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem' }}>
+                    
+                    <button
+                      onClick={handleExtractInner}
+                      disabled={isExtracting}
+                      style={{ flexDirection: 'column', fontSize: '0.7rem', padding: '0.5rem', gap: '0.25rem', backgroundColor: '#334155', color: '#06b6d4' }}
+                      title={isExtracting ? (extractStatus || "Working...") : "Fill Enclosed Holes"}
+                    >
+                      <Combine size={18} />
+                      <span>{isExtracting ? "Working..." : "Fill Holes"}</span>
+                    </button>
+
+                    <button
+                      onClick={handleCreateBasePlate}
+                      disabled={isBasePlating}
+                      style={{ flexDirection: 'column', fontSize: '0.7rem', padding: '0.5rem', gap: '0.25rem', backgroundColor: '#334155', color: '#8b5cf6' }}
+                      title={isBasePlating ? (basePlateStatus || "Working...") : "Fill Body (Base Plate)"}
+                    >
+                      <LayoutTemplate size={18} />
+                      <span>{isBasePlating ? "Working..." : "Fill Body"}</span>
+                    </button>
+
+                    <button
+                      onClick={handleSplitDisjoint}
+                      disabled={isSplitting}
+                      style={{ flexDirection: 'column', fontSize: '0.7rem', padding: '0.5rem', gap: '0.25rem', backgroundColor: '#334155', color: '#a855f7' }}
+                      title={isSplitting ? (splitStatus || "Working...") : "Separate Disjoint Parts"}
+                    >
+                      <SplitSquareHorizontal size={18} />
+                      <span>{isSplitting ? "Working..." : "Separate"}</span>
+                    </button>
+
+                    <button
+                      onClick={handlePreviewShards}
+                      disabled={isAbsorbingShards}
+                      style={{ flexDirection: 'column', fontSize: '0.7rem', padding: '0.5rem', gap: '0.25rem', backgroundColor: '#334155', color: '#4f46e5' }}
+                      title="Clean Edge Shards"
+                    >
+                      <Network size={18} />
+                      <span>{isAbsorbingShards ? "Scanning..." : "Clean Shards"}</span>
+                    </button>
+
+
+
+                  </div>
+
                   {pendingShards && (
-                    <div style={{ marginTop: '0.5rem' }}>
+                    <div style={{ marginTop: '0.75rem', backgroundColor: 'rgba(0,0,0,0.2)', padding: '0.5rem', borderRadius: '6px' }}>
                       <div style={{ fontSize: '0.65rem', marginBottom: '0.25rem', color: '#cbd5e1' }}>Select colors to absorb:</div>
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', maxHeight: '100px', overflowY: 'auto' }}>
                         {Object.entries(pendingShards).map(([colorHex, ids]) => (
@@ -1197,250 +1373,81 @@ function App() {
                       </div>
                     </div>
                   )}
-                </div>
 
-                <div style={{ padding: '0.5rem', backgroundColor: 'rgba(0,0,0,0.2)', borderRadius: '4px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.7rem', marginBottom: '4px', color: '#cbd5e1' }}>
-                    <span>Expand (Fill Gaps)</span>
-                    <span>{expandAmount.toFixed(1)}px</span>
-                  </div>
-                  <HoverSlider min="0.1" max="5" step="0.1" value={expandAmount} onChange={(e: any) => setExpandAmount(parseFloat(e.target.value))} />
-                  <button
-                    style={{ width: '100%', fontSize: '0.75rem', padding: '0.5rem', backgroundColor: '#6366f1', marginTop: '6px', border: 'none', color: 'white', borderRadius: '4px', cursor: isExpanding ? 'not-allowed' : 'pointer' }}
-                    onClick={handleExpandSelected}
-                    disabled={isExpanding}
-                  >
-                    {isExpanding ? expandStatus || "Working..." : "Expand Selected"}
-                  </button>
-                </div>
 
-                <div style={{ padding: '0.5rem', backgroundColor: 'rgba(0,0,0,0.2)', borderRadius: '4px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.7rem', marginBottom: '4px', color: '#cbd5e1' }}>
-                    <span>Smooth Selected</span>
-                    <span>{smoothAmount.toFixed(1)}</span>
-                  </div>
-                  <HoverSlider min="0.1" max="5" step="0.1" value={smoothAmount} onChange={(e: any) => setSmoothAmount(parseFloat(e.target.value))} />
-                  <button
-                    style={{ width: '100%', fontSize: '0.75rem', padding: '0.5rem', backgroundColor: '#ec4899', marginTop: '6px', border: 'none', color: 'white', borderRadius: '4px', cursor: isSmoothing ? 'not-allowed' : 'pointer' }}
-                    onClick={handleSmoothSelected}
-                    disabled={isSmoothing}
-                  >
-                    {isSmoothing ? smoothStatus || "Working..." : "Smooth Selected"}
-                  </button>
-                </div>
 
+
+                </div>
               </div>
 
-              {isMerging && (
-                <div style={{ marginTop: '0.75rem', backgroundColor: 'rgba(51,65,85,0.5)', padding: '0.75rem', borderRadius: '6px', border: '1px solid rgba(255,255,255,0.05)' }}>
-                  <div style={{ fontSize: '0.75rem', marginBottom: '0.75rem', color: '#cbd5e1' }}>Select target color to merge into:</div>
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.75rem' }}>
-                    {selectedUniqueColors.map(colorHex => (
-                      <div key={`target-${colorHex}`} style={{ position: 'relative' }}>
-                        <div
-                          onClick={() => executeFuse(colorHex)}
-                          style={{
-                            width: '32px', height: '32px', backgroundColor: `#${colorHex}`, borderRadius: '50%',
-                            cursor: 'pointer', border: '2px solid rgba(255,255,255,0.2)', transition: 'transform 0.1s'
-                          }}
-                          onMouseEnter={(e) => e.currentTarget.style.transform = 'scale(1.1)'}
-                          onMouseLeave={(e) => e.currentTarget.style.transform = 'scale(1)'}
-                          title={`Merge into #${colorHex}`}
-                        />
-                        <div
-                          onClick={(e) => { e.stopPropagation(); removeColorFromSelection(colorHex); }}
-                          style={{
-                            position: 'absolute', top: '-4px', right: '-4px', width: '16px', height: '16px',
-                            backgroundColor: '#ef4444', color: 'white', borderRadius: '50%', display: 'flex',
-                            alignItems: 'center', justifyContent: 'center', fontSize: '10px', fontWeight: 'bold',
-                            cursor: 'pointer', border: '1px solid #1e293b'
-                          }}
-                          title="Remove color from selection"
-                        >✕</div>
-                      </div>
-                    ))}
+              <div className="card">
+                <div className="card-header"><MoveVertical size={14} style={{ marginRight: '6px' }}/> Precision Modifiers</div>
+                <div className="card-body" style={{ gap: '1rem' }}>
+                  
+                  <div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.7rem', marginBottom: '4px', color: '#cbd5e1' }}>
+                      <span>Outline Border Width</span>
+                      <span>{borderWidth.toFixed(1)}px</span>
+                    </div>
+                    <HoverSlider min="0.1" max="5" step="0.1" value={borderWidth} onChange={(e: any) => setBorderWidth(parseFloat(e.target.value))} />
+                    <button
+                      style={{ width: '100%', fontSize: '0.75rem', padding: '0.4rem', backgroundColor: '#eab308', marginTop: '6px', border: 'none', color: 'white', borderRadius: '4px', cursor: isBordering ? 'not-allowed' : 'pointer' }}
+                      onClick={handleCreateBorder}
+                      disabled={isBordering}
+                    >
+                      {isBordering ? borderStatus || "Working..." : "Generate Border"}
+                    </button>
                   </div>
-                  <button onClick={() => setIsMerging(false)} style={{ marginTop: '0.75rem', fontSize: '0.7rem', padding: '0.3rem 0.5rem', backgroundColor: 'transparent', border: '1px solid #64748b', width: '100%' }}>
-                    Cancel Merge
-                  </button>
-                </div>
-              )}
 
-              {isFusingSelection && (
-                <div style={{ marginTop: '0.75rem', backgroundColor: 'rgba(51,65,85,0.5)', padding: '0.75rem', borderRadius: '6px', border: '1px solid rgba(255,255,255,0.05)' }}>
-                  <div style={{ fontSize: '0.75rem', marginBottom: '0.75rem', color: '#cbd5e1' }}>Select color for the fused part:</div>
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.75rem' }}>
-                    {selectedUniqueColors.map(colorHex => (
-                      <div key={`fuse-target-${colorHex}`} style={{ position: 'relative' }}>
-                        <div
-                          onClick={() => executeFuse(colorHex)}
-                          style={{
-                            width: '32px', height: '32px', backgroundColor: `#${colorHex}`, borderRadius: '50%',
-                            cursor: 'pointer', border: '2px solid rgba(255,255,255,0.2)', transition: 'transform 0.1s'
-                          }}
-                          onMouseEnter={(e) => e.currentTarget.style.transform = 'scale(1.1)'}
-                          onMouseLeave={(e) => e.currentTarget.style.transform = 'scale(1)'}
-                          title={`Make fused part #${colorHex}`}
-                        />
-                      </div>
-                    ))}
+                  <hr style={{ border: 'none', borderTop: '1px solid rgba(255,255,255,0.1)' }} />
+
+                  <div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.7rem', marginBottom: '4px', color: '#cbd5e1' }}>
+                      <span>Expand Size (Fill Gaps)</span>
+                      <span>{expandAmount.toFixed(1)}px</span>
+                    </div>
+                    <HoverSlider min="0.1" max="5" step="0.1" value={expandAmount} onChange={(e: any) => setExpandAmount(parseFloat(e.target.value))} />
+                    <button
+                      style={{ width: '100%', fontSize: '0.75rem', padding: '0.4rem', backgroundColor: '#6366f1', marginTop: '6px', border: 'none', color: 'white', borderRadius: '4px', cursor: isExpanding ? 'not-allowed' : 'pointer' }}
+                      onClick={handleExpandSelected}
+                      disabled={isExpanding}
+                    >
+                      {isExpanding ? expandStatus || "Working..." : "Expand Selected"}
+                    </button>
                   </div>
-                  <button onClick={() => setIsFusingSelection(false)} style={{ marginTop: '0.75rem', fontSize: '0.7rem', padding: '0.3rem 0.5rem', backgroundColor: 'transparent', border: '1px solid #64748b', width: '100%' }}>
-                    Cancel Fuse
-                  </button>
+
+                  <hr style={{ border: 'none', borderTop: '1px solid rgba(255,255,255,0.1)' }} />
+
+                  <div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.7rem', marginBottom: '4px', color: '#cbd5e1' }}>
+                      <span>Smooth Intensity</span>
+                      <span>{smoothAmount.toFixed(1)}</span>
+                    </div>
+                    <HoverSlider min="0.1" max="5" step="0.1" value={smoothAmount} onChange={(e: any) => setSmoothAmount(parseFloat(e.target.value))} />
+                    <button
+                      style={{ width: '100%', fontSize: '0.75rem', padding: '0.4rem', backgroundColor: '#ec4899', marginTop: '6px', border: 'none', color: 'white', borderRadius: '4px', cursor: isSmoothing ? 'not-allowed' : 'pointer' }}
+                      onClick={handleSmoothSelected}
+                      disabled={isSmoothing}
+                    >
+                      {isSmoothing ? smoothStatus || "Working..." : "Smooth Selected"}
+                    </button>
+                  </div>
+
                 </div>
-              )}
-            </details>
-          </div>
-        </div>
-
-        {/* GROUP 4: EXPORT OPTIONS */}
-        <div className="card" style={{ marginTop: 'auto' }}>
-          <div className="card-header">Export & Print Options</div>
-          <div className="card-body">
-            
-            <div style={{ display: 'flex', gap: '0.75rem' }}>
-              <div style={{ flex: 1 }}>
-                <label className="checkbox-label" style={{ fontSize: '0.75rem', marginBottom: '0.35rem', color: '#94a3b8' }}>Printer Profile</label>
-                <select className="custom-select" value={printerProfile} onChange={(e) => setPrinterProfile(e.target.value as any)}>
-                  <option value="A1 Mini (180x180)">A1 Mini (180x180)</option>
-                  <option value="X1/P1/A1 (256x256)">X1/P1/A1 (256x256)</option>
-                </select>
               </div>
-              <div style={{ flex: 1 }}>
-                <label className="checkbox-label" style={{ fontSize: '0.75rem', marginBottom: '0.35rem', color: '#94a3b8' }}>Export Layout</label>
-                <select className="custom-select" value={gridSize} onChange={(e) => setGridSize(e.target.value)}>
-                  <option value="auto">Auto (Max 2x2)</option>
-                  <option value="1x1">1x1 Plate</option>
-                  <option value="2x2">2x2 Plates</option>
-                  <option value="1x2">1x2 (Vertical)</option>
-                  <option value="2x1">2x1 (Horizontal)</option>
-                </select>
-              </div>
-            </div>
-
-            {gridSize === 'auto' && (
-              <div>
-                <label className="checkbox-label" style={{ fontSize: '0.75rem', marginBottom: '0.25rem' }}>Scale Multiplier (%)</label>
-                <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-                  <div style={{ flex: 1 }}><HoverSlider min="10" max="500" step="10" value={customScale} onChange={(e: any) => setCustomScale(Number(e.target.value))} displayFormat={(v: number) => `${Math.round(v)}%`} /></div>
-                  <span style={{ fontSize: '0.75rem', width: '40px', color: 'white', textAlign: 'right' }}>{customScale}%</span>
-                </div>
-                <label className="checkbox-label" style={{ marginTop: '0.5rem', fontSize: '0.75rem' }}>
-                  <input type="checkbox" checked={scaleZProportionally} onChange={(e) => setScaleZProportionally(e.target.checked)} />
-                  Scale Depth Proportionally
-                </label>
-              </div>
-            )}
-
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-              <label className="checkbox-label" style={{ fontSize: '0.75rem' }}>
-                <input type="checkbox" checked={mergeColors3MF} onChange={(e) => setMergeColors3MF(e.target.checked)} />
-                Join objects by color for 3MF
-              </label>
+            </>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', opacity: 0.5 }}>
+              <LayoutGrid size={48} style={{ marginBottom: '1rem', color: '#64748b' }} />
+              <div style={{ fontSize: '1rem', fontWeight: 'bold', color: '#94a3b8' }}>No Parts Selected</div>
+              <p style={{ fontSize: '0.8rem', color: '#64748b', textAlign: 'center', marginTop: '0.5rem', padding: '0 1rem' }}>
+                Click on any part of the 3D model to edit its extrusion depth, color, and apply advanced shape modifiers.
+              </p>
               
-              {!mergeColors3MF && (
-                <div style={{ paddingLeft: '1.5rem', marginTop: '-0.25rem', marginBottom: '0.25rem' }}>
-                  <label className="checkbox-label" style={{ fontSize: '0.75rem', marginBottom: '0.25rem', color: '#94a3b8' }}>Assembly Clearance (mm)</label>
-                  <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-                    <div style={{ flex: 1 }}><HoverSlider min="0" max="0.5" step="0.05" value={clearance} onChange={(e: any) => setClearance(Number(e.target.value))} displayFormat={(v: number) => v.toFixed(2)} /></div>
-                    <span style={{ fontSize: '0.75rem', width: '30px', color: 'white', textAlign: 'right' }}>{clearance.toFixed(2)}</span>
-                  </div>
-                </div>
-              )}
 
-              <label className="checkbox-label" style={{ fontSize: '0.75rem' }}>
-                <input type="checkbox" checked={mergeBeforeExport} onChange={(e) => setMergeBeforeExport(e.target.checked)} />
-                Join objects for STL (Single Mesh)
-              </label>
             </div>
-
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginTop: '0.5rem' }}>
-              <button disabled={!svgUrl || !!exportStatus} style={{ width: '100%', backgroundColor: '#ec4899' }} onClick={handleExport3MF}>
-                <Download size={16} /> Export 3MF (Multi-Plate)
-              </button>
-              <button disabled={!svgUrl} style={{ width: '100%', backgroundColor: '#475569', fontSize: '0.8rem', padding: '0.5rem' }} onClick={handleExport}>
-                <Download size={14} /> Export STL (Raw)
-              </button>
-            </div>
-          </div>
+          )}
         </div>
-      </div>
-
-      <div className="main-content" style={{ position: 'relative' }}>
-        {/* Loading Overlay */}
-        {(isTracing || fuseStatus || exportStatus) && (
-          <div style={{
-            position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
-            backgroundColor: 'rgba(15, 23, 42, 0.8)', zIndex: 10,
-            display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center'
-          }}>
-            <div className="spinner" style={{
-              width: '40px', height: '40px', border: '4px solid #334155',
-              borderTop: '4px solid #3b82f6', borderRadius: '50%',
-              animation: 'spin 1s linear infinite', marginBottom: '1rem'
-            }} />
-            <div style={{ color: '#f8fafc', fontSize: '1.2rem', fontWeight: 'bold', textAlign: 'center' }}>
-              {exportStatus || fuseStatus || isTracing}
-            </div>
-            <style>{`@keyframes spin { 100% { transform: rotate(360deg); } }`}</style>
-          </div>
-        )}
-
-        {!svgUrl && !isTracing && !fuseStatus && (
-          <div className="empty-state">
-            Upload an SVG or Image to get started
-          </div>
-        )}
-
-        {svgUrl && (
-          <Canvas frameloop="demand" camera={{ position: [0, 0, 100], fov: 50 }} onPointerMissed={() => setSelectedMeshIds([])}>
-            <ambientLight intensity={0.5} />
-            <directionalLight position={[10, 10, 10]} intensity={1} castShadow />
-            <OrbitControls makeDefault />
-            <Suspense fallback={null}>
-              <Center>
-                <group ref={sceneRef}>
-                  <SvgModel
-                    ref={svgModelRef}
-                    svgUrl={svgUrl}
-                    highlightStyle={highlightStyle}
-                    sealGaps={sealGaps}
-                    cutOverlaps={cutOverlaps}
-                    selectedMeshIds={selectedMeshIds}
-                    previewMeshIds={previewMeshIds}
-                    meshDepths={meshDepths}
-                    meshColorOverrides={meshColorOverrides}
-                    onSelect={(ids, shiftKey) => {
-                      setSelectedMeshIds(prev => {
-                        if (shiftKey) {
-                          const isAdding = !prev.includes(ids[0]);
-                          if (isAdding) {
-                            return [...new Set([...prev, ...ids])];
-                          } else {
-                            return prev.filter(i => !ids.includes(i));
-                          }
-                        } else {
-                          // Unselect if clicking the exact same selection again
-                          if (prev.length === ids.length && ids.every(i => prev.includes(i))) {
-                            return [];
-                          }
-                        }
-                        return ids;
-                      });
-                    }}
-                    onVerticesCalculated={setVertexCount}
-                    onParseProgress={(msg) => setIsTracing(msg)}
-                    onParseComplete={(extractedColors) => {
-                      setIsTracing(null);
-                      if (extractedColors) setMeshColors(extractedColors);
-                    }}
-                  />
-                </group>
-              </Center>
-            </Suspense>
-          </Canvas>
-        )}
       </div>
     </>
   );

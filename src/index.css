@@ -23,19 +23,50 @@ body {
 
 #root {
   display: flex;
+  flex-direction: column;
   width: 100vw;
   height: 100vh;
+  overflow: hidden;
 }
 
-.sidebar {
-  width: 300px;
-  background-color: #1e293b; /* Slate 800 */
-  border-right: 1px solid #334155; /* Slate 700 */
+.top-nav {
+  height: 60px;
+  background-color: #1e293b;
+  border-bottom: 1px solid #334155;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 1.5rem;
+  z-index: 20;
+  box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+}
+
+.app-main {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+.left-sidebar {
+  width: 320px;
+  background-color: #1e293b;
+  border-right: 1px solid #334155;
   padding: 1.5rem;
   display: flex;
   flex-direction: column;
   gap: 1.5rem;
-  box-shadow: 2px 0 10px rgba(0, 0, 0, 0.2);
+  z-index: 10;
+  overflow-y: auto;
+}
+
+.right-sidebar {
+  width: 320px;
+  background-color: #1e293b;
+  border-left: 1px solid #334155;
+  padding: 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
   z-index: 10;
   overflow-y: auto;
 }
