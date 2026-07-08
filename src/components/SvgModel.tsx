@@ -70,7 +70,6 @@ function multiPolygonToShapes(multiPoly: MultiPolygon): THREE.Shape[] {
 
 export interface SvgModelProps {
   svgUrl: string;
-  selectByColor: boolean;
   sealGaps?: boolean;
   cutOverlaps?: boolean;
   highlightStyle?: 'dashed' | 'solid';
@@ -90,9 +89,13 @@ export interface SvgModelRef {
   smoothSelected: (selectedIds: string[], amount: number, onProgress: (msg: string) => void) => Promise<string[] | null>;
   splitDisjoint: (selectedIds: string[], onProgress: (msg: string) => void) => Promise<string[] | null>;
   expandSelected: (selectedIds: string[], amount: number, onProgress: (msg: string) => void) => Promise<string[] | null>;
+  createUniformBorder: (selectedIds: string[], width: number, onProgress: (msg: string) => void) => Promise<string[] | null>;
   sliceAndExport: (buildPlateSize: number, gridSize: string, printerModel: string, mergeByColor: boolean, customScale: number, clearance: number, scaleZProportionally: boolean, onProgress: (msg: string) => void) => Promise<Blob | null>;
   getShapes: () => { id: string; color: THREE.Color; colorHex: string; shapes: THREE.Shape[] }[];
   setShapes: (shapes: { id: string; color: THREE.Color; colorHex: string; shapes: THREE.Shape[] }[]) => void;
+  getShapeAreas: () => { id: string; area: number }[];
+  extractInnerParts: (selectedIds: string[], onProgress: (msg: string) => void) => Promise<string[] | null>;
+  createBasePlate: (selectedIds: string[], onProgress: (msg: string) => void) => Promise<string[] | null>;
 }
 
 const DashedEdges = ({ shapes, color, depth }: { shapes: THREE.Shape[], color: string, depth: number }) => {
@@ -166,7 +169,7 @@ const whiteStripes = createStripeTexture('rgba(255,255,255,0.7)');
 const blackStripes = createStripeTexture('rgba(0,0,0,0.5)');
 
 export const SvgModel = React.forwardRef<SvgModelRef, SvgModelProps>(({
-  svgUrl, selectByColor, sealGaps, cutOverlaps, highlightStyle = 'dashed', selectedMeshIds, previewMeshIds = [], meshDepths, meshColorOverrides = {}, onSelect, onVerticesCalculated, onParseProgress, onParseComplete
+  svgUrl, sealGaps, cutOverlaps, highlightStyle = 'dashed', selectedMeshIds, previewMeshIds = [], meshDepths, meshColorOverrides = {}, onSelect, onVerticesCalculated, onParseProgress, onParseComplete
 }, ref) => {
   const svgData = useLoader(SVGLoader, svgUrl);
   const groupRef = React.useRef<THREE.Group>(null);
@@ -176,6 +179,154 @@ export const SvgModel = React.forwardRef<SvgModelRef, SvgModelProps>(({
   React.useImperativeHandle(ref, () => ({
     getShapes: () => shapesWithColors,
     setShapes: (newShapes) => setShapesWithColors(newShapes),
+    getShapeAreas: () => {
+      return shapesWithColors.map(item => {
+        let area = 0;
+        item.shapes.forEach(shape => {
+          const pts = shape.getPoints();
+          if (pts.length > 2) area += THREE.ShapeUtils.area(pts);
+          shape.holes.forEach(hole => {
+            const hPts = hole.getPoints();
+            if (hPts.length > 2) area -= THREE.ShapeUtils.area(hPts);
+          });
+        });
+        return { id: item.id, area: Math.abs(area) };
+      });
+    },
+    
+    extractInnerParts: async (selectedIds: string[], onProgress: (msg: string) => void) => {
+      onProgress("Extracting inner holes...");
+      await new Promise(r => requestAnimationFrame(() => setTimeout(r, 0)));
+
+      const newParts: { id: string; color: THREE.Color; colorHex: string; shapes: THREE.Shape[] }[] = [];
+      const nextShapes = [...shapesWithColors];
+      const newIds: string[] = [];
+
+      selectedIds.forEach(id => {
+        const item = nextShapes.find(n => n.id === id);
+        if (item) {
+          item.shapes.forEach(shape => {
+            shape.holes.forEach(hole => {
+              const pts = hole.getPoints();
+              if (pts.length > 2) {
+                // Determine winding. THREE.Shape expects standard counter-clockwise winding.
+                // If the hole is clockwise, we might want to reverse it, but Shape typically handles it.
+                // We'll reverse it to be safe, because holes are strictly opposite winding to solids.
+                if (THREE.ShapeUtils.isClockWise(pts)) {
+                  pts.reverse();
+                }
+                const newShape = new THREE.Shape(pts);
+                const newId = `inner_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+                newIds.push(newId);
+                newParts.push({
+                  id: newId,
+                  color: new THREE.Color(0xffffff), // Default to white
+                  colorHex: "ffffff",
+                  shapes: [newShape]
+                });
+              }
+            });
+          });
+        }
+      });
+
+      if (newParts.length > 0) {
+        setShapesWithColors(prev => [...prev, ...newParts]);
+        return newIds;
+      }
+      return null;
+    },
+
+    createBasePlate: async (selectedIds: string[], onProgress: (msg: string) => void) => {
+      onProgress("Fusing and tracing silhouette...");
+      await new Promise(r => requestAnimationFrame(() => setTimeout(r, 0)));
+
+      const itemsToFuse = shapesWithColors.filter(item => selectedIds.includes(item.id) && item.shapes.length > 0);
+      if (itemsToFuse.length === 0) return null;
+
+      const clipper = new ClipperLib.Clipper();
+      const CLIPPER_SCALE = 10000;
+      
+      itemsToFuse.forEach(item => {
+        item.shapes.forEach(shape => {
+          const pts = shape.getPoints();
+          if (pts.length > 2) {
+            const path = pts.map(p => ({ X: Math.round(p.x * CLIPPER_SCALE), Y: Math.round(p.y * CLIPPER_SCALE) }));
+            clipper.AddPath(path, ClipperLib.PolyType.ptSubject, true);
+          }
+          shape.holes.forEach(hole => {
+            const hPts = hole.getPoints();
+            if (hPts.length > 2) {
+              const hPath = hPts.map(p => ({ X: Math.round(p.x * CLIPPER_SCALE), Y: Math.round(p.y * CLIPPER_SCALE) }));
+              clipper.AddPath(hPath, ClipperLib.PolyType.ptSubject, true);
+            }
+          });
+        });
+      });
+
+      const strokesUnion = new ClipperLib.PolyTree();
+      clipper.Execute(ClipperLib.ClipType.ctUnion, strokesUnion, ClipperLib.PolyFillType.pftNonZero, ClipperLib.PolyFillType.pftNonZero);
+
+      // Extract the solid silhouette (outer contours only)
+      const solidSilhouettePaths: any[] = [];
+      // @ts-ignore
+      strokesUnion.Childs().forEach((child: any) => {
+        solidSilhouettePaths.push(child.Contour());
+      });
+
+      // Perform a Boolean Difference to cut out the strokes, leaving only the perfect negative spaces!
+      const diffClipper = new ClipperLib.Clipper();
+      diffClipper.AddPaths(solidSilhouettePaths, ClipperLib.PolyType.ptSubject, true);
+      const strokesPaths = ClipperLib.Clipper.PolyTreeToPaths(strokesUnion);
+      diffClipper.AddPaths(strokesPaths, ClipperLib.PolyType.ptClip, true);
+
+      const finalSolution = new ClipperLib.PolyTree();
+      diffClipper.Execute(ClipperLib.ClipType.ctDifference, finalSolution, ClipperLib.PolyFillType.pftNonZero, ClipperLib.PolyFillType.pftNonZero);
+
+      const finalMultiPoly: MultiPolygon = [];
+      
+      // Parse the resulting PolyTree into a MultiPolygon
+      const addNodeToMultiPoly = (node: any) => {
+        if (!node.IsHole()) {
+          const poly: Polygon = [];
+          const outerRing: Pair[] = node.Contour().map((pt: any) => [pt.X / CLIPPER_SCALE, pt.Y / CLIPPER_SCALE] as Pair);
+          
+          if (outerRing.length > 2) {
+            if (THREE.ShapeUtils.isClockWise(outerRing.map(p => new THREE.Vector2(p[0], p[1])))) {
+              outerRing.reverse();
+            }
+            poly.push(outerRing);
+            
+            node.Childs().forEach((holeNode: any) => {
+              const holeRing: Pair[] = holeNode.Contour().map((pt: any) => [pt.X / CLIPPER_SCALE, pt.Y / CLIPPER_SCALE] as Pair);
+              if (holeRing.length > 2) {
+                if (!THREE.ShapeUtils.isClockWise(holeRing.map(p => new THREE.Vector2(p[0], p[1])))) {
+                  holeRing.reverse();
+                }
+                poly.push(holeRing);
+              }
+            });
+            finalMultiPoly.push(poly);
+          }
+        }
+        node.Childs().forEach((child: any) => addNodeToMultiPoly(child));
+      };
+      
+      // @ts-ignore
+      finalSolution.Childs().forEach((child: any) => addNodeToMultiPoly(child));
+
+      const shapes = multiPolygonToShapes(finalMultiPoly);
+
+      if (shapes.length > 0) {
+        const id = `baseplate_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+        const newItem = { id, color: new THREE.Color(0xffffff), colorHex: "ffffff", shapes };
+        
+        setShapesWithColors(prev => [...prev, newItem]);
+        return [id];
+      }
+
+      return null;
+    },
     
     
     absorbShards: async (selectedIds: string[], maxArea: number, onProgress: (msg: string) => void) => {
@@ -412,6 +563,110 @@ smoothSelected: async (selectedIds: string[], amount: number, onProgress: (msg: 
       });
 
       return newIds;
+    },
+    createUniformBorder: async (selectedIds: string[], widthAmount: number, onProgress: (msg: string) => void) => {
+      const itemsToBorder = shapesWithColors.filter(item => selectedIds.includes(item.id) && item.shapes.length > 0);
+      if (itemsToBorder.length === 0) return null;
+
+      onProgress("Calculating uniform border outline...");
+      await new Promise(r => requestAnimationFrame(() => setTimeout(r, 0)));
+
+      const scale = 10000;
+      const widthScaled = widthAmount * scale;
+      const clipper = new ClipperLib.Clipper();
+      
+      // Step 1: Combine all selected items into a single union to avoid internal border overlaps
+      itemsToBorder.forEach(item => {
+        item.shapes.forEach(shape => {
+          const polygon = shapeToPolygon(shape);
+          for (let i = 0; i < polygon.length; i++) {
+             const ring = polygon[i];
+             if (ring.length < 3) continue;
+             const clipperPath = ring.map(p => ({ X: Math.round(p[0] * scale), Y: Math.round(p[1] * scale) }));
+             const isOuter = (i === 0);
+             if (isOuter !== ClipperLib.Clipper.Orientation(clipperPath)) clipperPath.reverse();
+             // @ts-ignore
+             clipper.AddPath(clipperPath, ClipperLib.PolyType.ptSubject, true);
+          }
+        });
+      });
+
+      // @ts-ignore
+      const unionTree = new ClipperLib.PolyTree();
+      // @ts-ignore
+      clipper.Execute(ClipperLib.ClipType.ctUnion, unionTree, ClipperLib.PolyFillType.pftNonZero, ClipperLib.PolyFillType.pftNonZero);
+
+      // Extract paths from union
+      const unionPaths: any[] = [];
+      const getPolys = (node: any) => {
+         if (!node.IsHole()) unionPaths.push(node.Contour());
+         node.Childs().forEach(getPolys);
+      };
+      unionTree.Childs().forEach(getPolys);
+
+      // Step 2: Offset the union by widthAmount to create the expanded boundary
+      const co = new ClipperLib.ClipperOffset();
+      // @ts-ignore
+      co.AddPaths(unionPaths, ClipperLib.JoinType.jtRound, ClipperLib.EndType.etClosedPolygon);
+      
+      // @ts-ignore
+      const expandedTree = new ClipperLib.PolyTree();
+      co.Execute(expandedTree, widthScaled);
+
+      // Step 3: Subtract the original union from the expanded boundary to create a hollow border
+      const borderClipper = new ClipperLib.Clipper();
+      
+      // Add expanded boundary as Subject
+      const expandedPaths: any[] = [];
+      const getExpandedPolys = (node: any) => {
+         expandedPaths.push(node.Contour());
+         node.Childs().forEach(getExpandedPolys);
+      };
+      expandedTree.Childs().forEach(getExpandedPolys);
+      // @ts-ignore
+      borderClipper.AddPaths(expandedPaths, ClipperLib.PolyType.ptSubject, true);
+
+      // Add original union as Clip (to hollow it out)
+      // @ts-ignore
+      borderClipper.AddPaths(unionPaths, ClipperLib.PolyType.ptClip, true);
+
+      // @ts-ignore
+      const finalTree = new ClipperLib.PolyTree();
+      // @ts-ignore
+      borderClipper.Execute(ClipperLib.ClipType.ctDifference, finalTree, ClipperLib.PolyFillType.pftNonZero, ClipperLib.PolyFillType.pftNonZero);
+
+      const parsePolyNode = (node: any, multiPoly: MultiPolygon) => {
+        if (!node.IsHole()) {
+          const ring: Ring = node.Contour().map((p: any) => [p.X / scale, p.Y / scale]);
+          if (ring.length > 0 && (ring[0][0] !== ring[ring.length - 1][0] || ring[0][1] !== ring[ring.length - 1][1])) ring.push([...ring[0]]);
+          if (ring.length >= 4) {
+            const poly = [ring];
+            node.Childs().forEach((child: any) => {
+              const holeRing: Ring = child.Contour().map((p: any) => [p.X / scale, p.Y / scale]);
+              if (holeRing.length > 0 && (holeRing[0][0] !== holeRing[holeRing.length - 1][0] || holeRing[0][1] !== holeRing[holeRing.length - 1][1])) holeRing.push([...holeRing[0]]);
+              if (holeRing.length >= 4) poly.push(holeRing);
+              child.Childs().forEach((nestedNode: any) => parsePolyNode(nestedNode, multiPoly));
+            });
+            multiPoly.push(poly);
+          }
+        }
+      };
+
+      const finalMultiPoly: MultiPolygon = [];
+      // @ts-ignore
+      finalTree.Childs().forEach((child: any) => parsePolyNode(child, finalMultiPoly));
+
+      const shapes = multiPolygonToShapes(finalMultiPoly);
+
+      if (shapes.length > 0) {
+        const id = `border_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+        const newItem = { id, color: itemsToBorder[0].color, colorHex: "000000", shapes };
+        
+        setShapesWithColors(prev => [...prev, newItem]);
+        return [id];
+      }
+
+      return null;
     },
     splitDisjoint: async (selectedIds: string[], onProgress: (msg: string) => void) => {
       const itemsToSplit = shapesWithColors.filter(item => selectedIds.includes(item.id) && item.shapes.length > 1);
@@ -1253,10 +1508,7 @@ smoothSelected: async (selectedIds: string[], amount: number, onProgress: (msg: 
             userData={{ originalColorHex: baseColorHex, originalZPosition: baseZOffset }}
             onClick={(e) => {
               e.stopPropagation();
-              const ids = selectByColor
-                ? shapesWithColors.filter(it => (meshColorOverrides[it.id] ?? it.colorHex) === baseColorHex).map(it => it.id)
-                : [item.id];
-              onSelect(ids, e.shiftKey);
+              onSelect([item.id], e.shiftKey);
             }}
           >
             {depth === 0 ? (
