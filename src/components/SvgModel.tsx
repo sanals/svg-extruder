@@ -90,7 +90,8 @@ export interface SvgModelRef {
   smoothSelected: (selectedIds: string[], amount: number, onProgress: (msg: string) => void) => Promise<string[] | null>;
   splitDisjoint: (selectedIds: string[], onProgress: (msg: string) => void) => Promise<string[] | null>;
   expandSelected: (selectedIds: string[], amount: number, onProgress: (msg: string) => void) => Promise<string[] | null>;
-  createUniformBorder: (selectedIds: string[], width: number, onProgress: (msg: string) => void) => Promise<string[] | null>;
+  createUniformBorder: (selectedIds: string[], width: number, outerOnly: boolean, onProgress: (msg: string) => void) => Promise<string[] | null>;
+  generateUniformLineArt: (width: number, lightShapeIds: string[], darkShapeIds: string[], onProgress: (msg: string) => void) => Promise<string[] | null>;
   sliceAndExport: (buildPlateSize: number, gridSize: string, printerModel: string, mergeByColor: boolean, customScale: number, clearance: number, scaleZProportionally: boolean, onProgress: (msg: string) => void) => Promise<Blob | null>;
   getShapes: () => { id: string; color: THREE.Color; colorHex: string; shapes: THREE.Shape[] }[];
   setShapes: (shapes: { id: string; color: THREE.Color; colorHex: string; shapes: THREE.Shape[] }[]) => void;
@@ -565,7 +566,7 @@ smoothSelected: async (selectedIds: string[], amount: number, onProgress: (msg: 
 
       return newIds;
     },
-    createUniformBorder: async (selectedIds: string[], widthAmount: number, onProgress: (msg: string) => void) => {
+    createUniformBorder: async (selectedIds: string[], widthAmount: number, outerOnly: boolean, onProgress: (msg: string) => void) => {
       const itemsToBorder = shapesWithColors.filter(item => selectedIds.includes(item.id) && item.shapes.length > 0);
       if (itemsToBorder.length === 0) return null;
 
@@ -631,6 +632,26 @@ smoothSelected: async (selectedIds: string[], amount: number, onProgress: (msg: 
       // @ts-ignore
       borderClipper.AddPaths(unionPaths, ClipperLib.PolyType.ptClip, true);
 
+      if (outerOnly) {
+         onProgress("Removing internal adjacencies...");
+         shapesWithColors.forEach(item => {
+           if (!selectedIds.includes(item.id)) {
+             item.shapes.forEach(shape => {
+               const polygon = shapeToPolygon(shape);
+               for (let i = 0; i < polygon.length; i++) {
+                 const ring = polygon[i];
+                 if (ring.length < 3) continue;
+                 const clipperPath = ring.map(p => ({ X: Math.round(p[0] * scale), Y: Math.round(p[1] * scale) }));
+                 const isOuter = (i === 0);
+                 if (isOuter !== ClipperLib.Clipper.Orientation(clipperPath)) clipperPath.reverse();
+                 // @ts-ignore
+                 borderClipper.AddPath(clipperPath, ClipperLib.PolyType.ptClip, true);
+               }
+             });
+           }
+         });
+      }
+
       // @ts-ignore
       const finalTree = new ClipperLib.PolyTree();
       // @ts-ignore
@@ -662,6 +683,79 @@ smoothSelected: async (selectedIds: string[], amount: number, onProgress: (msg: 
       if (shapes.length > 0) {
         const id = `border_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
         const newItem = { id, color: itemsToBorder[0].color, colorHex: "000000", shapes };
+        
+        setShapesWithColors(prev => [...prev, newItem]);
+        return [id];
+      }
+
+      return null;
+    },
+
+    
+    
+    generateUniformLineArt: async (widthAmount: number, lightShapeIds: string[], darkShapeIds: string[], onProgress: (msg: string) => void) => {
+      if (shapesWithColors.length === 0) return null;
+
+      onProgress("Generating uniform line art...");
+      await new Promise(r => requestAnimationFrame(() => setTimeout(r, 0)));
+
+      const scale = 10000;
+      const widthScaled = (widthAmount / 2) * scale;
+      const whiteCo = new ClipperLib.ClipperOffset();
+
+      shapesWithColors.forEach(item => {
+        if (!lightShapeIds.includes(item.id) && !darkShapeIds.includes(item.id)) return;
+        
+        item.shapes.forEach(shape => {
+          const polygon = shapeToPolygon(shape);
+          for (let i = 0; i < polygon.length; i++) {
+             const ring = polygon[i];
+             if (ring.length < 3) continue;
+             const clipperPath = ring.map(p => ({ X: Math.round(p[0] * scale), Y: Math.round(p[1] * scale) }));
+             const isOuter = (i === 0);
+             if (isOuter !== ClipperLib.Clipper.Orientation(clipperPath)) clipperPath.reverse();
+             
+             // @ts-ignore
+             if (lightShapeIds.includes(item.id)) {
+               // @ts-ignore
+               whiteCo.AddPath(clipperPath, ClipperLib.JoinType.jtRound, ClipperLib.EndType.etClosedLine);
+             }
+          }
+        });
+      });
+
+      // @ts-ignore
+      const whiteTree = new ClipperLib.PolyTree();
+      whiteCo.Execute(whiteTree, widthScaled);
+      
+      const finalTree = whiteTree;
+
+      const parsePolyNode = (node: any, multiPoly: MultiPolygon) => {
+        if (!node.IsHole()) {
+          const ring = node.Contour().map((p: any) => [p.X / scale, p.Y / scale]);
+          if (ring.length > 0 && (ring[0][0] !== ring[ring.length - 1][0] || ring[0][1] !== ring[ring.length - 1][1])) ring.push([...ring[0]]);
+          if (ring.length >= 4) {
+            const poly = [ring];
+            node.Childs().forEach((child: any) => {
+              const holeRing = child.Contour().map((p: any) => [p.X / scale, p.Y / scale]);
+              if (holeRing.length > 0 && (holeRing[0][0] !== holeRing[holeRing.length - 1][0] || holeRing[0][1] !== holeRing[holeRing.length - 1][1])) holeRing.push([...holeRing[0]]);
+              if (holeRing.length >= 4) poly.push(holeRing);
+              child.Childs().forEach((nestedNode: any) => parsePolyNode(nestedNode, multiPoly));
+            });
+            multiPoly.push(poly);
+          }
+        }
+      };
+
+      const finalMultiPoly: MultiPolygon = [];
+      // @ts-ignore
+      finalTree.Childs().forEach((child: any) => parsePolyNode(child, finalMultiPoly));
+
+      const shapes = multiPolygonToShapes(finalMultiPoly);
+
+      if (shapes.length > 0) {
+        const id = `lineart_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+        const newItem = { id, color: new THREE.Color(0x000000), colorHex: "000000", shapes };
         
         setShapesWithColors(prev => [...prev, newItem]);
         return [id];

@@ -1,5 +1,5 @@
 import { useState, useRef, Suspense, useEffect, useCallback } from 'react';
-import { Upload, Download, Undo, Redo, Settings, LayoutGrid, Droplet, MoveVertical, Zap, Trash2, SplitSquareHorizontal, LayoutTemplate, Network, WrapText, Combine } from 'lucide-react';
+import { Upload, Download, Undo, Redo, LayoutGrid, Droplet, MoveVertical, Zap, SplitSquareHorizontal, LayoutTemplate, Network, WrapText, Combine, Wand2, Palette, Settings } from 'lucide-react';
 import { Canvas } from '@react-three/fiber';
 import { OrbitControls, Center } from '@react-three/drei';
 import * as THREE from 'three';
@@ -123,6 +123,7 @@ function App() {
   const [extractStatus, setExtractStatus] = useState<string | null>(null);
   const [isBasePlating, setIsBasePlating] = useState(false);
   const [basePlateStatus, setBasePlateStatus] = useState<string | null>(null);
+  const [showExportOptions, setShowExportOptions] = useState(false);
 
   const [printerProfile, setPrinterProfile] = useState<'A1 Mini (180x180)' | 'X1/P1/A1 (256x256)'>('X1/P1/A1 (256x256)');
   const [gridSize, setGridSize] = useState<string>("auto");
@@ -201,6 +202,178 @@ function App() {
       .map(m => m.id);
 
     setSelectedMeshIds(prev => [...new Set([...prev, ...idsToSelect])]);
+  };
+
+  // Smart Auto-Extrude: detects outlines (strokes/darkest colors) and fills, assigns depths automatically.
+  const handleAutoExtrude = () => {
+    if (!svgModelRef.current) return;
+    const allShapes = svgModelRef.current.getShapes();
+    if (allShapes.length === 0) return;
+    pushToHistory();
+
+    const calculateThinness = (shape: THREE.Shape) => {
+      let area = 0;
+      let perimeter = 0;
+      const getP = (pts: THREE.Vector2[]) => {
+        let p = 0;
+        for (let i = 1; i < pts.length; i++) p += pts[i].distanceTo(pts[i - 1]);
+        if (pts.length > 0) p += pts[0].distanceTo(pts[pts.length - 1]);
+        return p;
+      };
+
+      const pts = shape.getPoints();
+      if (pts.length > 2) area += Math.abs(THREE.ShapeUtils.area(pts));
+      perimeter += getP(pts);
+
+      shape.holes.forEach(hole => {
+        const hpts = hole.getPoints();
+        if (hpts.length > 2) area -= Math.abs(THREE.ShapeUtils.area(hpts));
+        perimeter += getP(hpts);
+      });
+
+      if (perimeter === 0) return 999999;
+      return (2 * area) / perimeter; // Calculates the absolute physical thickness of the shape
+    };
+
+    // Build unique color list from actual shapes, sorted lightest → darkest
+    const colorSet = Array.from(new Set(allShapes.map(s => meshColorOverrides[s.id] ?? s.colorHex)));
+    colorSet.sort((a, b) => getLuminance(b) - getLuminance(a));
+
+    const darkestColor = colorSet[colorSet.length - 1];
+    const minLuminance = getLuminance(darkestColor);
+
+    // 1. Base criteria: Any color within 60 luminance of the absolute darkest
+    const darkColors = new Set(colorSet.filter(c => getLuminance(c) <= minLuminance + 60));
+
+    const newDepths: Record<string, number> = {};
+    allShapes.forEach(s => {
+      const effectiveColor = meshColorOverrides[s.id] ?? s.colorHex;
+
+      let minThickness = 999999;
+      s.shapes.forEach(shape => {
+        const thickness = calculateThinness(shape);
+        if (thickness < minThickness) minThickness = thickness;
+      });
+
+      // It's considered an outline if it's one of the darkest colors (which catches dots like pupils)
+      // OR if it's geometrically a stroke/line (average thickness < 15 pixels), catching light-colored borders!
+      const isDark = darkColors.has(effectiveColor);
+      const isStroke = minThickness < 15;
+
+      if (isDark || isStroke) {
+        newDepths[s.id] = 3;  // Outlines / lines → taller
+      } else {
+        newDepths[s.id] = 1;  // Fill colors → recessed base
+      }
+    });
+
+    setMeshDepths(prev => ({ ...prev, ...newDepths }));
+  };
+
+
+  // Convert to B&W Line Art: Uses the new geometry generation feature
+  const handleConvertToLineArt = async () => {
+    if (!svgModelRef.current) return;
+    const allShapes = svgModelRef.current.getShapes();
+    if (allShapes.length === 0) return;
+    pushToHistory();
+
+
+
+    const calculateThickness = (shape: THREE.Shape) => {
+      let area = 0;
+      let perimeter = 0;
+      const getP = (pts: THREE.Vector2[]) => {
+        let p = 0;
+        for (let i = 1; i < pts.length; i++) p += pts[i].distanceTo(pts[i - 1]);
+        if (pts.length > 0) p += pts[0].distanceTo(pts[pts.length - 1]);
+        return p;
+      };
+      const pts = shape.getPoints();
+      if (pts.length > 2) area += Math.abs(THREE.ShapeUtils.area(pts));
+      perimeter += getP(pts);
+      shape.holes.forEach(hole => {
+        const hpts = hole.getPoints();
+        if (hpts.length > 2) area -= Math.abs(THREE.ShapeUtils.area(hpts));
+        perimeter += getP(hpts);
+      });
+      if (perimeter === 0) return 999999;
+      return (2 * area) / perimeter;
+    };
+
+    const colorSet = Array.from(new Set(allShapes.map(s => meshColorOverrides[s.id] ?? s.colorHex)));
+    colorSet.sort((a, b) => getLuminance(b) - getLuminance(a));
+    const darkestColor = colorSet[colorSet.length - 1];
+    const minLuminance = getLuminance(darkestColor);
+    // Increased threshold to 80 to catch dark brown/grey outlines that aren't pure black
+    const darkColors = new Set(colorSet.filter(c => getLuminance(c) <= minLuminance + 80));
+
+    // Reset all original shapes: dark ones stay solid black, light ones become white fills
+    const newDepths: Record<string, number> = {};
+    const newColors: Record<string, string> = {};
+    const lightShapeIds: string[] = [];
+    const darkShapeIds: string[] = [];
+    const outlineThicknesses: number[] = [];
+
+    allShapes.forEach(s => {
+      const effectiveColor = meshColorOverrides[s.id] ?? s.colorHex;
+
+      let minThickness = 999999;
+      s.shapes.forEach(shape => {
+        const thickness = calculateThickness(shape);
+        if (thickness < minThickness) minThickness = thickness;
+      });
+
+      const isStroke = minThickness < 15;
+
+      // Keep solid black if it's a dark color OR if it's geometrically a stroke (e.g. light brown outline)
+      if (darkColors.has(effectiveColor) || isStroke) {
+        newDepths[s.id] = 3;
+        newColors[s.id] = '000000';
+        darkShapeIds.push(s.id);
+
+        if (isStroke) {
+          s.shapes.forEach(shape => {
+            if (shape.holes.length > 0) {
+              outlineThicknesses.push(calculateThickness(shape));
+            }
+          });
+        }
+      } else {
+        newDepths[s.id] = 1;
+        newColors[s.id] = 'ffffff';
+        lightShapeIds.push(s.id);
+      }
+    });
+
+    let targetWidth = borderWidth;
+    if (outlineThicknesses.length > 0) {
+      outlineThicknesses.sort((a, b) => a - b);
+      const medianThickness = outlineThicknesses[Math.floor(outlineThicknesses.length / 2)];
+      if (medianThickness > 0 && medianThickness < 30) {
+        targetWidth = medianThickness;
+      }
+    }
+
+    setIsBordering(true);
+    setBorderStatus("Generating uniform line art...");
+
+    try {
+      const newIds = await svgModelRef.current.generateUniformLineArt(targetWidth, lightShapeIds, darkShapeIds, (msg: string) => setBorderStatus(msg));
+      if (newIds && newIds.length > 0) {
+        newIds.forEach(id => {
+          newDepths[id] = 3;
+          newColors[id] = '000000'; // the generated line network is black and pops up to depth 3
+        });
+      }
+      setMeshDepths(prev => ({ ...prev, ...newDepths }));
+      setMeshColorOverrides(prev => ({ ...prev, ...newColors }));
+    } catch (e) {
+      alert("Failed to generate line art.");
+    } finally {
+      setIsBordering(false);
+      setBorderStatus(null);
+    }
   };
 
   const pushToHistory = () => {
@@ -410,6 +583,7 @@ function App() {
 
   const [isBordering, setIsBordering] = useState(false);
   const [borderWidth, setBorderWidth] = useState(2.0);
+  const [borderOuterOnly, setBorderOuterOnly] = useState(true);
   const [borderStatus, setBorderStatus] = useState<string | null>(null);
 
   const handlePreviewShards = async () => {
@@ -552,7 +726,7 @@ function App() {
     if (selectedMeshIds.length === 0 || !svgModelRef.current) return;
     pushToHistory(); setIsBordering(true); setBorderStatus("Creating border...");
     try {
-      const newIds = await svgModelRef.current.createUniformBorder(selectedMeshIds, borderWidth, (msg: string) => setBorderStatus(msg));
+      const newIds = await svgModelRef.current.createUniformBorder(selectedMeshIds, borderWidth, borderOuterOnly, (msg: string) => setBorderStatus(msg));
       if (newIds && newIds.length > 0) {
         const avgDepth = selectedMeshIds.reduce((sum, id) => sum + (meshDepths[id] ?? 0), 0) / selectedMeshIds.length;
         setMeshDepths(prev => {
@@ -724,7 +898,7 @@ function App() {
 
   const handleUndo = useCallback(() => {
     if (history.length === 0) return;
-    
+
     // Save current state for redo (including current selection)
     const currentState = {
       meshDepths: { ...meshDepths },
@@ -733,12 +907,12 @@ function App() {
       shapes: svgModelRef.current?.getShapes(),
       selectedMeshIds: [...selectedMeshIds]
     };
-    
+
     const snapshot = history[history.length - 1];
-    
+
     setRedoHistory(prev => [...prev, currentState]);
     setHistory(prev => prev.slice(0, -1));
-    
+
     // Apply snapshot
     setMeshDepths(snapshot.meshDepths);
     setMeshColorOverrides(snapshot.meshColorOverrides);
@@ -756,7 +930,7 @@ function App() {
 
   const handleRedo = useCallback(() => {
     if (redoHistory.length === 0) return;
-    
+
     // Save current state for undo (including current selection)
     const currentState = {
       meshDepths: { ...meshDepths },
@@ -765,12 +939,12 @@ function App() {
       shapes: svgModelRef.current?.getShapes(),
       selectedMeshIds: [...selectedMeshIds]
     };
-    
+
     const snapshot = redoHistory[redoHistory.length - 1];
-    
+
     setHistory(prev => [...prev, currentState]);
     setRedoHistory(prev => prev.slice(0, -1));
-    
+
     // Apply snapshot
     setMeshDepths(snapshot.meshDepths);
     setMeshColorOverrides(snapshot.meshColorOverrides);
@@ -945,9 +1119,23 @@ function App() {
 
   return (
     <>
-      <div className="top-nav">
+      <div className="top-nav" style={{ position: 'relative' }}>
         <h1 className="sidebar-header" style={{ margin: 0, fontSize: '1.25rem' }}>SVG Extruder 3D</h1>
+
+        {selectedMeshIds.length > 0 && (
+          <div style={{ position: 'absolute', left: '50%', transform: 'translateX(-50%)', display: 'flex', alignItems: 'center', gap: '1rem', width: '400px' }}>
+            <span style={{ fontSize: '0.85rem', fontWeight: 600, color: '#60a5fa', whiteSpace: 'nowrap' }}>Extrusion Depth</span>
+            <div style={{ flex: 1, padding: '0 0.5rem' }}>
+                <HoverSlider id="depth-slider" min="0" max="20" step="0.1" value={currentDepth} onChange={handleDepthChange} onPointerDown={handleDepthPointerDown} disabled={selectedMeshIds.length === 0} />
+            </div>
+            <span style={{ fontSize: '1.1rem', fontWeight: 700, color: '#f8fafc', whiteSpace: 'nowrap', width: '60px', textAlign: 'right' }}>{currentDepth.toFixed(1)} <span style={{fontSize: '0.7rem', color: '#94a3b8', fontWeight: 'normal'}}>mm</span></span>
+          </div>
+        )}
+
         <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+          <button onClick={() => setShowExportOptions(true)} style={{ display: 'flex', alignItems: 'center', gap: '6px', backgroundColor: '#ec4899', color: 'white', border: 'none', padding: '6px 12px', borderRadius: '4px', cursor: 'pointer', fontSize: '0.8rem', fontWeight: 'bold' }}>
+            <Download size={14} /> Export Options
+          </button>
           {vertexCount > 0 && (
             <div style={{ padding: '0.25rem 0.75rem', borderRadius: '6px', backgroundColor: 'rgba(0,0,0,0.2)', border: '1px solid rgba(255,255,255,0.05)', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
               <div style={{ fontSize: '0.85rem', fontWeight: 600, color: vertexCount > 100000 ? '#ef4444' : '#e2e8f0' }}>{vertexCount.toLocaleString()} Vertices</div>
@@ -1028,25 +1216,70 @@ function App() {
               </div>
 
               {svgUrl && (
-                <button
-                  onClick={() => {
-                    const currentSvgStr = generateSVGFromCurrentShapes();
-                    const blob = new Blob([currentSvgStr || rawSvgContent || ''], { type: 'image/svg+xml' });
-                    const link = document.createElement('a');
-                    link.href = URL.createObjectURL(blob);
-                    link.download = 'modified_vectorized.svg';
-                    link.click();
-                  }}
-                  style={{
-                    width: '100%', padding: '0.4rem', backgroundColor: '#334155', color: 'white', border: '1px solid rgba(255,255,255,0.1)',
-                    borderRadius: '6px', cursor: 'pointer', fontSize: '0.75rem', display: 'flex', alignItems: 'center',
-                    justifyContent: 'center', gap: '0.4rem', transition: 'background-color 0.2s', marginTop: '0.5rem'
-                  }}
-                  onMouseOver={(e) => e.currentTarget.style.backgroundColor = '#475569'}
-                  onMouseOut={(e) => e.currentTarget.style.backgroundColor = '#334155'}
-                >
-                  <Download size={14} /> Download 2D SVG
-                </button>
+                <>
+                  <button
+                    onClick={() => {
+                      const currentSvgStr = generateSVGFromCurrentShapes();
+                      const blob = new Blob([currentSvgStr || rawSvgContent || ''], { type: 'image/svg+xml' });
+                      const link = document.createElement('a');
+                      link.href = URL.createObjectURL(blob);
+                      link.download = 'modified_vectorized.svg';
+                      link.click();
+                    }}
+                    style={{
+                      width: '100%', padding: '0.4rem', backgroundColor: '#334155', color: 'white', border: '1px solid rgba(255,255,255,0.1)',
+                      borderRadius: '6px', cursor: 'pointer', fontSize: '0.75rem', display: 'flex', alignItems: 'center',
+                      justifyContent: 'center', gap: '0.4rem', transition: 'background-color 0.2s', marginTop: '0.5rem'
+                    }}
+                    onMouseOver={(e) => e.currentTarget.style.backgroundColor = '#475569'}
+                    onMouseOut={(e) => e.currentTarget.style.backgroundColor = '#334155'}
+                  >
+                    <Download size={14} /> Download 2D SVG
+                  </button>
+
+                  <div style={{ display: 'flex', gap: '0.25rem', marginTop: '0.25rem' }}>
+                    <button
+                      onClick={handleAutoExtrude}
+                      disabled={uniqueColors.length === 0}
+                      style={{
+                        flex: 1, padding: '0.5rem',
+                        background: uniqueColors.length > 0
+                          ? 'linear-gradient(135deg, #d97706, #f59e0b)'
+                          : 'rgba(255,255,255,0.05)',
+                        color: uniqueColors.length > 0 ? 'white' : '#64748b',
+                        border: 'none', borderRadius: '6px',
+                        cursor: uniqueColors.length > 0 ? 'pointer' : 'not-allowed',
+                        fontSize: '0.8rem', fontWeight: 600,
+                        display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.4rem',
+                        transition: 'opacity 0.2s',
+                        boxShadow: uniqueColors.length > 0 ? '0 2px 8px rgba(245,158,11,0.35)' : 'none',
+                      }}
+                      title="Automatically extrude outlines high and fill colors low (one-click 3D-ready)"
+                    >
+                      <Wand2 size={14} /> Auto-Extrude
+                    </button>
+
+                    <button
+                      onClick={handleConvertToLineArt}
+                      disabled={uniqueColors.length === 0}
+                      style={{
+                        flex: 1, padding: '0.5rem',
+                        background: uniqueColors.length > 0
+                          ? 'linear-gradient(135deg, #475569, #1e293b)'
+                          : 'rgba(255,255,255,0.05)',
+                        color: uniqueColors.length > 0 ? 'white' : '#64748b',
+                        border: '1px solid #64748b', borderRadius: '6px',
+                        cursor: uniqueColors.length > 0 ? 'pointer' : 'not-allowed',
+                        fontSize: '0.8rem', fontWeight: 600,
+                        display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.4rem',
+                        transition: 'opacity 0.2s',
+                      }}
+                      title="Convert to Black & White line art (strokes black, fills white)"
+                    >
+                      <Palette size={14} /> Line Art
+                    </button>
+                  </div>
+                </>
               )}
 
               {imageDataUrl && (
@@ -1061,61 +1294,40 @@ function App() {
             </div>
           </div>
 
-          <div className="card">
-            <div className="card-header"><LayoutGrid size={14} style={{ marginRight: '6px' }} /> Geometry Settings</div>
-            <div className="card-body" style={{ gap: '0.5rem' }}>
-              <label className="checkbox-label" htmlFor="seal-gaps">
-                <input id="seal-gaps" type="checkbox" checked={sealGaps} onChange={(e) => setSealGaps(e.target.checked)} />
-                Seal gaps (adds slight bevel)
+          <div style={{ marginBottom: '1rem' }}>
+            <div style={{ fontSize: '0.75rem', color: '#94a3b8', marginBottom: '0.25rem' }}><Droplet size={12} style={{ marginRight: '4px' }} /> Highlight Style</div>
+            <div className="segmented-control">
+              <label>
+                <input type="radio" name="highlightStyle" checked={highlightStyle === 'dashed'} onChange={() => setHighlightStyle('dashed')} />
+                <span>Dashed</span>
               </label>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
-                <label className="checkbox-label" htmlFor="cut-overlaps" style={{ cursor: svgUrl ? 'not-allowed' : 'pointer', opacity: svgUrl ? 0.5 : 1 }}>
-                  <input id="cut-overlaps" type="checkbox" checked={cutOverlaps} onChange={(e) => setCutOverlaps(e.target.checked)} disabled={!!svgUrl} />
-                  Cut overlaps (puzzle pieces)
-                </label>
-                {svgUrl && (
-                  <span style={{ fontSize: '0.65rem', color: '#ef4444', paddingLeft: '1.5rem' }}>
-                    Must be set before uploading SVG.
-                  </span>
-                )}
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', color: '#cbd5e1' }}>
-                  <span>Backing Thickness (mm)</span>
-                  <span>{backingDepth}</span>
-                </div>
-                <HoverSlider 
-                  min="0" max="10" step="1" 
-                  value={backingDepth} 
-                  onChange={(val: number) => setBackingDepth(val)} 
-                  displayFormat={(v: number) => v.toString()} 
-                />
-              </div>
-              <hr style={{ border: 'none', borderTop: '1px solid rgba(255,255,255,0.1)', margin: '0.5rem 0' }} />
-              <div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', marginBottom: '4px', color: '#cbd5e1' }}>
-                  <span>Quick Select by Size</span>
-                  <span>{selectSizeThreshold}</span>
-                </div>
-                <HoverSlider
-                  min="0"
-                  max="10000"
-                  step="10"
-                  value={selectSizeThreshold}
-                  onChange={(e: any) => handleSelectBySizeChange(parseFloat(e.target.value))}
-                  displayFormat={(v: number) => Math.round(v).toString()}
-                />
-              </div>
+              <label>
+                <input type="radio" name="highlightStyle" checked={highlightStyle === 'solid'} onChange={() => setHighlightStyle('solid')} />
+                <span>Striped</span>
+              </label>
             </div>
           </div>
 
           {uniqueColors.length > 0 && (
             <div className="card">
-              <div className="card-header"><Droplet size={14} style={{ marginRight: '6px' }} /> Global Color Palette</div>
               <div className="card-body">
-                <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.5rem' }}>
-                  <button onClick={() => setSelectedMeshIds(currentMeshColors.map(m => m.id))} style={{ fontSize: '0.7rem', padding: '0.25rem 0.5rem', flex: 1, backgroundColor: '#3b82f6' }}>Select All</button>
-                  <button onClick={() => setSelectedMeshIds([])} style={{ fontSize: '0.7rem', padding: '0.25rem 0.5rem', flex: 1, backgroundColor: '#64748b' }}>Deselect All</button>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                  <label className="checkbox-label" style={{ fontSize: '0.75rem', fontWeight: 'bold', margin: 0, gap: '6px' }}>
+                    <input 
+                      type="checkbox" 
+                      checked={uniqueColors.length > 0 && uniqueColors.every(c => currentMeshColors.filter(m => m.colorHex === c).every(m => selectedMeshIds.includes(m.id)))} 
+                      onChange={(e) => {
+                        if (e.target.checked) setSelectedMeshIds(currentMeshColors.map(m => m.id));
+                        else setSelectedMeshIds([]);
+                      }} 
+                    />
+                    Select All Colors
+                  </label>
+                  {selectedUniqueColors.length === 1 && !isMerging && (
+                    <button onClick={handleAutoSelectSimilar} style={{ fontSize: '0.65rem', padding: '0.2rem 0.5rem', backgroundColor: '#10b981', border: 'none', color: 'white', borderRadius: '4px', cursor: 'pointer' }}>
+                      Auto-Select Similar
+                    </button>
+                  )}
                 </div>
                 <div className="colors-scroll-container" style={{
                   display: 'flex', flexWrap: 'wrap', gap: '0.5rem', height: '140px', minHeight: '60px', maxHeight: '40vh',
@@ -1159,48 +1371,7 @@ function App() {
                     );
                   })}
                 </div>
-                {selectedUniqueColors.length === 1 && !isMerging && (
-                  <button onClick={handleAutoSelectSimilar} style={{ width: '100%', marginTop: '0.5rem', fontSize: '0.75rem', padding: '0.5rem', backgroundColor: '#10b981', border: 'none', color: 'white', borderRadius: '4px', cursor: 'pointer' }}>
-                    Auto-Select Similar Colors
-                  </button>
-                )}
-
-                {/* --- MOVED FROM RIGHT SIDEBAR --- */}
-
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginTop: '1rem' }}>
-                  <div style={{ fontSize: '0.8rem', color: '#94a3b8' }}>Custom Color Override:</div>
-                  <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', opacity: selectedMeshIds.length > 0 ? 1 : 0.5, pointerEvents: selectedMeshIds.length > 0 ? 'auto' : 'none' }}>
-                    <input
-                      type="color"
-                      value={`#${selectedUniqueColors.length === 1 ? selectedUniqueColors[0] : 'ffffff'}`}
-                      onBlur={handleCustomColorChange}
-                      onChange={() => { }}
-                      style={{ width: '32px', height: '32px', border: 'none', padding: 0, background: 'transparent', cursor: 'pointer' }}
-                      title="Pick a custom color (applies when picker is closed)"
-                    />
-                    <div style={{ flex: 1, display: 'flex', gap: '4px', overflowX: 'auto', padding: '2px 0' }}>
-                      {uniqueColors.slice(0, 10).map(colorHex => (
-                        <div
-                          key={`palette-${colorHex}`}
-                          onClick={() => {
-                            if (selectedMeshIds.length === 0) return;
-                            setMeshColorOverrides(prev => {
-                              const next = { ...prev };
-                              selectedMeshIds.forEach(id => next[id] = colorHex);
-                              return next;
-                            });
-                            pushToHistory();
-                          }}
-                          style={{
-                            minWidth: '20px', height: '20px', backgroundColor: `#${colorHex}`, borderRadius: '4px', cursor: 'pointer', border: '1px solid rgba(255,255,255,0.2)'
-                          }}
-                          title={`Apply #${colorHex}`}
-                        />
-                      ))}
-                    </div>
-                  </div>
-                </div>
-
+                
                 <div style={{ display: 'flex', gap: '0.5rem', marginTop: '1rem' }}>
                   <button
                     onClick={initiateFuse}
@@ -1218,7 +1389,6 @@ function App() {
                     <WrapText size={14} /> Merge Colors
                   </button>
                 </div>
-
                 {isMerging && (
                   <div style={{ marginTop: '0.75rem', backgroundColor: 'rgba(51,65,85,0.5)', padding: '0.75rem', borderRadius: '6px', border: '1px solid rgba(255,255,255,0.05)' }}>
                     <div style={{ fontSize: '0.75rem', marginBottom: '0.75rem', color: '#cbd5e1' }}>Select target color to merge into:</div>
@@ -1277,96 +1447,49 @@ function App() {
                     </button>
                   </div>
                 )}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginTop: '1rem' }}>
+                  <div style={{ fontSize: '0.8rem', color: '#94a3b8' }}>Custom Color Override:</div>
+                  <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', opacity: selectedMeshIds.length > 0 ? 1 : 0.5, pointerEvents: selectedMeshIds.length > 0 ? 'auto' : 'none' }}>
+                    <input
+                      type="color"
+                      value={`#${selectedUniqueColors.length === 1 ? selectedUniqueColors[0] : 'ffffff'}`}
+                      onBlur={handleCustomColorChange}
+                      onChange={() => { }}
+                      style={{ width: '32px', height: '32px', border: 'none', padding: 0, background: 'transparent', cursor: 'pointer' }}
+                      title="Pick a custom color (applies when picker is closed)"
+                    />
+                    <div style={{ flex: 1, display: 'flex', gap: '4px', overflowX: 'auto', padding: '2px 0' }}>
+                      {uniqueColors.slice(0, 10).map(colorHex => (
+                        <div
+                          key={`palette-${colorHex}`}
+                          onClick={() => {
+                            if (selectedMeshIds.length === 0) return;
+                            setMeshColorOverrides(prev => {
+                              const next = { ...prev };
+                              selectedMeshIds.forEach(id => next[id] = colorHex);
+                              return next;
+                            });
+                            pushToHistory();
+                          }}
+                          style={{
+                            minWidth: '20px', height: '20px', backgroundColor: `#${colorHex}`, borderRadius: '4px', cursor: 'pointer', border: '1px solid rgba(255,255,255,0.2)'
+                          }}
+                          title={`Apply #${colorHex}`}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                
+
+                
 
               </div>
             </div>
           )}
 
-          <div className="card">
-            <div className="card-header"><Droplet size={14} style={{ marginRight: '6px' }} /> Highlight Style</div>
-            <div className="card-body">
-              <div className="segmented-control">
-                <label>
-                  <input type="radio" name="highlightStyle" checked={highlightStyle === 'dashed'} onChange={() => setHighlightStyle('dashed')} />
-                  <span>Dashed</span>
-                </label>
-                <label>
-                  <input type="radio" name="highlightStyle" checked={highlightStyle === 'solid'} onChange={() => setHighlightStyle('solid')} />
-                  <span>Striped</span>
-                </label>
-              </div>
-            </div>
-          </div>
-
-          <div className="card" style={{ marginTop: 'auto' }}>
-            <div className="card-header"><Download size={14} style={{ marginRight: '6px' }} /> Export Options</div>
-            <div className="card-body">
-              <div style={{ display: 'flex', gap: '0.75rem' }}>
-                <div style={{ flex: 1 }}>
-                  <label className="checkbox-label" style={{ fontSize: '0.75rem', marginBottom: '0.35rem', color: '#94a3b8' }}>Printer Profile</label>
-                  <select className="custom-select" value={printerProfile} onChange={(e) => setPrinterProfile(e.target.value as any)}>
-                    <option value="A1 Mini (180x180)">A1 Mini (180x180)</option>
-                    <option value="X1/P1/A1 (256x256)">X1/P1/A1 (256x256)</option>
-                  </select>
-                </div>
-                <div style={{ flex: 1 }}>
-                  <label className="checkbox-label" style={{ fontSize: '0.75rem', marginBottom: '0.35rem', color: '#94a3b8' }}>Export Layout</label>
-                  <select className="custom-select" value={gridSize} onChange={(e) => setGridSize(e.target.value)}>
-                    <option value="auto">Auto (Max 2x2)</option>
-                    <option value="1x1">1x1 Plate</option>
-                    <option value="2x2">2x2 Plates</option>
-                    <option value="1x2">1x2 (Vertical)</option>
-                    <option value="2x1">2x1 (Horizontal)</option>
-                  </select>
-                </div>
-              </div>
-
-              {gridSize === 'auto' && (
-                <div>
-                  <label className="checkbox-label" style={{ fontSize: '0.75rem', marginBottom: '0.25rem' }}>Scale Multiplier (%)</label>
-                  <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-                    <div style={{ flex: 1 }}><HoverSlider min="10" max="500" step="10" value={customScale} onChange={(e: any) => setCustomScale(Number(e.target.value))} displayFormat={(v: number) => `${Math.round(v)}%`} /></div>
-                    <span style={{ fontSize: '0.75rem', width: '40px', color: 'white', textAlign: 'right' }}>{customScale}%</span>
-                  </div>
-                  <label className="checkbox-label" style={{ marginTop: '0.5rem', fontSize: '0.75rem' }}>
-                    <input type="checkbox" checked={scaleZProportionally} onChange={(e) => setScaleZProportionally(e.target.checked)} />
-                    Scale Depth Proportionally
-                  </label>
-                </div>
-              )}
-
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                <label className="checkbox-label" style={{ fontSize: '0.75rem' }}>
-                  <input type="checkbox" checked={mergeColors3MF} onChange={(e) => setMergeColors3MF(e.target.checked)} />
-                  Join objects by color for 3MF
-                </label>
-
-                {!mergeColors3MF && (
-                  <div style={{ paddingLeft: '1.5rem', marginTop: '-0.25rem', marginBottom: '0.25rem' }}>
-                    <label className="checkbox-label" style={{ fontSize: '0.75rem', marginBottom: '0.25rem', color: '#94a3b8' }}>Assembly Clearance (mm)</label>
-                    <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-                      <div style={{ flex: 1 }}><HoverSlider min="0" max="0.5" step="0.05" value={clearance} onChange={(e: any) => setClearance(Number(e.target.value))} displayFormat={(v: number) => v.toFixed(2)} /></div>
-                      <span style={{ fontSize: '0.75rem', width: '30px', color: 'white', textAlign: 'right' }}>{clearance.toFixed(2)}</span>
-                    </div>
-                  </div>
-                )}
-
-                <label className="checkbox-label" style={{ fontSize: '0.75rem' }}>
-                  <input type="checkbox" checked={mergeBeforeExport} onChange={(e) => setMergeBeforeExport(e.target.checked)} />
-                  Join objects for STL (Single Mesh)
-                </label>
-              </div>
-
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginTop: '0.5rem' }}>
-                <button disabled={!svgUrl || !!exportStatus} style={{ width: '100%', backgroundColor: '#ec4899' }} onClick={handleExport3MF}>
-                  <Download size={16} /> Export 3MF (Multi-Plate)
-                </button>
-                <button disabled={!svgUrl} style={{ width: '100%', backgroundColor: '#475569', fontSize: '0.8rem', padding: '0.5rem' }} onClick={handleExport}>
-                  <Download size={14} /> Export STL (Raw)
-                </button>
-              </div>
-            </div>
-          </div>
+          
 
         </div>
 
@@ -1448,34 +1571,56 @@ function App() {
 
         {/* RIGHT SIDEBAR (Contextual) */}
         <div className="right-sidebar">
+          <div className="card">
+            <div className="card-header"><LayoutGrid size={14} style={{ marginRight: '6px' }} /> Geometry Settings</div>
+            <div className="card-body" style={{ gap: '0.5rem' }}>
+              <label className="checkbox-label" htmlFor="seal-gaps">
+                <input id="seal-gaps" type="checkbox" checked={sealGaps} onChange={(e) => setSealGaps(e.target.checked)} />
+                Seal gaps (adds slight bevel)
+              </label>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                <label className="checkbox-label" htmlFor="cut-overlaps" style={{ cursor: svgUrl ? 'not-allowed' : 'pointer', opacity: svgUrl ? 0.5 : 1 }}>
+                  <input id="cut-overlaps" type="checkbox" checked={cutOverlaps} onChange={(e) => setCutOverlaps(e.target.checked)} disabled={!!svgUrl} />
+                  Cut overlaps (puzzle pieces)
+                </label>
+                {svgUrl && (
+                  <span style={{ fontSize: '0.65rem', color: '#ef4444', paddingLeft: '1.5rem' }}>
+                    Must be set before uploading SVG.
+                  </span>
+                )}
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', color: '#cbd5e1' }}>
+                  <span>Backing Thickness (mm)</span>
+                  <span>{backingDepth}</span>
+                </div>
+                <HoverSlider
+                  min="0" max="10" step="1"
+                  value={backingDepth}
+                  onChange={(val: number) => setBackingDepth(val)}
+                  displayFormat={(v: number) => v.toString()}
+                />
+              </div>
+              <hr style={{ border: 'none', borderTop: '1px solid rgba(255,255,255,0.1)', margin: '0.5rem 0' }} />
+              <div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', marginBottom: '4px', color: '#cbd5e1' }}>
+                  <span>Quick Select by Size</span>
+                  <span>{selectSizeThreshold}</span>
+                </div>
+                <HoverSlider
+                  min="0"
+                  max="10000"
+                  step="10"
+                  value={selectSizeThreshold}
+                  onChange={(e: any) => handleSelectBySizeChange(parseFloat(e.target.value))}
+                  displayFormat={(v: number) => Math.round(v).toString()}
+                />
+              </div>
+            </div>
+          </div>
+
           {selectedMeshIds.length > 0 ? (
             <>
-              <div className="card" style={{ border: '1px solid #3b82f6', boxShadow: '0 0 15px rgba(59, 130, 246, 0.15)' }}>
-                <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <span style={{ display: 'flex', alignItems: 'center' }}><Settings size={14} style={{ marginRight: '6px' }} /> Properties</span>
-                  <button
-                    style={{ padding: '0.2rem', backgroundColor: 'transparent', border: 'none', color: '#ef4444', cursor: 'pointer' }}
-                    onClick={handleDeleteSelected}
-                    title="Delete Selected Parts"
-                  >
-                    <Trash2 size={16} />
-                  </button>
-                </div>
-                <div className="card-body">
-                  <div style={{ marginBottom: '1rem' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.25rem' }}>
-                      <label htmlFor="depth-slider" style={{ fontSize: '0.8rem', fontWeight: 600, color: '#60a5fa' }}>Extrusion Depth</label>
-                      <span style={{ fontSize: '1rem', fontWeight: 700, color: '#f8fafc' }}>{currentDepth.toFixed(1)}</span>
-                    </div>
-                    <HoverSlider id="depth-slider" min="0" max="20" step="0.1" value={currentDepth} onChange={handleDepthChange} onPointerDown={handleDepthPointerDown} disabled={selectedMeshIds.length === 0} />
-                  </div>
-
-
-
-
-                </div>
-              </div>
-
               <div className="card">
                 <div className="card-header"><Zap size={14} style={{ marginRight: '6px' }} /> Quick Actions</div>
                 <div className="card-body">
@@ -1559,55 +1704,43 @@ function App() {
 
               <div className="card">
                 <div className="card-header"><MoveVertical size={14} style={{ marginRight: '6px' }} /> Precision Modifiers</div>
-                <div className="card-body" style={{ gap: '1rem' }}>
+                <div className="card-body" style={{ gap: '0.75rem', padding: '0.75rem' }}>
 
                   <div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.7rem', marginBottom: '4px', color: '#cbd5e1' }}>
                       <span>Outline Border Width</span>
                       <span>{borderWidth.toFixed(1)}px</span>
                     </div>
-                    <HoverSlider min="0.1" max="5" step="0.1" value={borderWidth} onChange={(e: any) => setBorderWidth(parseFloat(e.target.value))} />
-                    <button
-                      style={{ width: '100%', fontSize: '0.75rem', padding: '0.4rem', backgroundColor: '#eab308', marginTop: '6px', border: 'none', color: 'white', borderRadius: '4px', cursor: isBordering ? 'not-allowed' : 'pointer' }}
-                      onClick={handleCreateBorder}
-                      disabled={isBordering}
-                    >
-                      {isBordering ? borderStatus || "Working..." : "Generate Border"}
-                    </button>
+                    <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                      <div style={{ flex: 1 }}><HoverSlider min="0.1" max="20" step="0.1" value={borderWidth} onChange={(e: any) => setBorderWidth(parseFloat(e.target.value))} /></div>
+                      <button style={{ fontSize: '0.65rem', padding: '0.2rem 0.5rem', backgroundColor: '#eab308', border: 'none', color: 'white', borderRadius: '4px', cursor: isBordering ? 'not-allowed' : 'pointer', whiteSpace: 'nowrap', minWidth: '60px' }} onClick={handleCreateBorder} disabled={isBordering}>{isBordering ? borderStatus || "Working..." : "Generate"}</button>
+                    </div>
+                    <label style={{ display: 'flex', alignItems: 'center', fontSize: '0.65rem', color: '#cbd5e1', marginTop: '4px', cursor: 'pointer' }}>
+                      <input type="checkbox" checked={borderOuterOnly} onChange={(e) => setBorderOuterOnly(e.target.checked)} style={{ marginRight: '4px' }} />
+                      Outer Edges Only
+                    </label>
                   </div>
-
-                  <hr style={{ border: 'none', borderTop: '1px solid rgba(255,255,255,0.1)' }} />
 
                   <div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.7rem', marginBottom: '4px', color: '#cbd5e1' }}>
                       <span>Expand Size (Fill Gaps)</span>
                       <span>{expandAmount.toFixed(1)}px</span>
                     </div>
-                    <HoverSlider min="0.1" max="5" step="0.1" value={expandAmount} onChange={(e: any) => setExpandAmount(parseFloat(e.target.value))} />
-                    <button
-                      style={{ width: '100%', fontSize: '0.75rem', padding: '0.4rem', backgroundColor: '#6366f1', marginTop: '6px', border: 'none', color: 'white', borderRadius: '4px', cursor: isExpanding ? 'not-allowed' : 'pointer' }}
-                      onClick={handleExpandSelected}
-                      disabled={isExpanding}
-                    >
-                      {isExpanding ? expandStatus || "Working..." : "Expand Selected"}
-                    </button>
+                    <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                      <div style={{ flex: 1 }}><HoverSlider min="0.1" max="5" step="0.1" value={expandAmount} onChange={(e: any) => setExpandAmount(parseFloat(e.target.value))} /></div>
+                      <button style={{ fontSize: '0.65rem', padding: '0.2rem 0.5rem', backgroundColor: '#6366f1', border: 'none', color: 'white', borderRadius: '4px', cursor: isExpanding ? 'not-allowed' : 'pointer', whiteSpace: 'nowrap', minWidth: '60px' }} onClick={handleExpandSelected} disabled={isExpanding}>{isExpanding ? expandStatus || "Working..." : "Expand"}</button>
+                    </div>
                   </div>
-
-                  <hr style={{ border: 'none', borderTop: '1px solid rgba(255,255,255,0.1)' }} />
 
                   <div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.7rem', marginBottom: '4px', color: '#cbd5e1' }}>
                       <span>Smooth Intensity</span>
                       <span>{smoothAmount.toFixed(1)}</span>
                     </div>
-                    <HoverSlider min="0.1" max="5" step="0.1" value={smoothAmount} onChange={(e: any) => setSmoothAmount(parseFloat(e.target.value))} />
-                    <button
-                      style={{ width: '100%', fontSize: '0.75rem', padding: '0.4rem', backgroundColor: '#ec4899', marginTop: '6px', border: 'none', color: 'white', borderRadius: '4px', cursor: isSmoothing ? 'not-allowed' : 'pointer' }}
-                      onClick={handleSmoothSelected}
-                      disabled={isSmoothing}
-                    >
-                      {isSmoothing ? smoothStatus || "Working..." : "Smooth Selected"}
-                    </button>
+                    <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                      <div style={{ flex: 1 }}><HoverSlider min="0.1" max="5" step="0.1" value={smoothAmount} onChange={(e: any) => setSmoothAmount(parseFloat(e.target.value))} /></div>
+                      <button style={{ fontSize: '0.65rem', padding: '0.2rem 0.5rem', backgroundColor: '#ec4899', border: 'none', color: 'white', borderRadius: '4px', cursor: isSmoothing ? 'not-allowed' : 'pointer', whiteSpace: 'nowrap', minWidth: '60px' }} onClick={handleSmoothSelected} disabled={isSmoothing}>{isSmoothing ? smoothStatus || "Working..." : "Smooth"}</button>
+                    </div>
                   </div>
 
                 </div>
@@ -1626,6 +1759,80 @@ function App() {
           )}
         </div>
       </div>
+      {showExportOptions && (
+          <div className="export-popup-overlay" style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.5)', zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', backdropFilter: 'blur(3px)' }} onClick={(e) => { if (e.target === e.currentTarget) setShowExportOptions(false); }}>
+          <div className="card" onClick={(e) => e.stopPropagation()} style={{ width: '400px', maxWidth: '90vw', maxHeight: '90vh', overflowY: 'auto', position: 'relative', boxShadow: '0 10px 25px rgba(0,0,0,0.5)', border: '1px solid #475569', padding: '1rem', backgroundColor: '#1e293b' }}>
+            <button style={{ position: 'absolute', top: '10px', right: '10px', background: 'none', border: 'none', color: '#94a3b8', cursor: 'pointer', fontSize: '1.2rem', padding: '4px' }} onClick={() => setShowExportOptions(false)}>✕</button>
+            <div className="card-header"><Download size={14} style={{ marginRight: '6px' }} /> Export Options</div>
+            <div className="card-body">
+              <div style={{ display: 'flex', gap: '0.75rem' }}>
+                <div style={{ flex: 1 }}>
+                  <label className="checkbox-label" style={{ fontSize: '0.75rem', marginBottom: '0.35rem', color: '#94a3b8' }}>Printer Profile</label>
+                  <select className="custom-select" value={printerProfile} onChange={(e) => setPrinterProfile(e.target.value as any)}>
+                    <option value="A1 Mini (180x180)">A1 Mini (180x180)</option>
+                    <option value="X1/P1/A1 (256x256)">X1/P1/A1 (256x256)</option>
+                  </select>
+                </div>
+                <div style={{ flex: 1 }}>
+                  <label className="checkbox-label" style={{ fontSize: '0.75rem', marginBottom: '0.35rem', color: '#94a3b8' }}>Export Layout</label>
+                  <select className="custom-select" value={gridSize} onChange={(e) => setGridSize(e.target.value)}>
+                    <option value="auto">Auto (Max 2x2)</option>
+                    <option value="1x1">1x1 Plate</option>
+                    <option value="2x2">2x2 Plates</option>
+                    <option value="1x2">1x2 (Vertical)</option>
+                    <option value="2x1">2x1 (Horizontal)</option>
+                  </select>
+                </div>
+              </div>
+
+              {gridSize === 'auto' && (
+                <div>
+                  <label className="checkbox-label" style={{ fontSize: '0.75rem', marginBottom: '0.25rem' }}>Scale Multiplier (%)</label>
+                  <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                    <div style={{ flex: 1 }}><HoverSlider min="10" max="500" step="10" value={customScale} onChange={(e: any) => setCustomScale(Number(e.target.value))} displayFormat={(v: number) => `${Math.round(v)}%`} /></div>
+                    <span style={{ fontSize: '0.75rem', width: '40px', color: 'white', textAlign: 'right' }}>{customScale}%</span>
+                  </div>
+                  <label className="checkbox-label" style={{ marginTop: '0.5rem', fontSize: '0.75rem' }}>
+                    <input type="checkbox" checked={scaleZProportionally} onChange={(e) => setScaleZProportionally(e.target.checked)} />
+                    Scale Depth Proportionally
+                  </label>
+                </div>
+              )}
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                <label className="checkbox-label" style={{ fontSize: '0.75rem' }}>
+                  <input type="checkbox" checked={mergeColors3MF} onChange={(e) => setMergeColors3MF(e.target.checked)} />
+                  Join objects by color for 3MF
+                </label>
+
+                {!mergeColors3MF && (
+                  <div style={{ paddingLeft: '1.5rem', marginTop: '-0.25rem', marginBottom: '0.25rem' }}>
+                    <label className="checkbox-label" style={{ fontSize: '0.75rem', marginBottom: '0.25rem', color: '#94a3b8' }}>Assembly Clearance (mm)</label>
+                    <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                      <div style={{ flex: 1 }}><HoverSlider min="0" max="0.5" step="0.05" value={clearance} onChange={(e: any) => setClearance(Number(e.target.value))} displayFormat={(v: number) => v.toFixed(2)} /></div>
+                      <span style={{ fontSize: '0.75rem', width: '30px', color: 'white', textAlign: 'right' }}>{clearance.toFixed(2)}</span>
+                    </div>
+                  </div>
+                )}
+
+                <label className="checkbox-label" style={{ fontSize: '0.75rem' }}>
+                  <input type="checkbox" checked={mergeBeforeExport} onChange={(e) => setMergeBeforeExport(e.target.checked)} />
+                  Join objects for STL (Single Mesh)
+                </label>
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginTop: '0.5rem' }}>
+                <button disabled={!svgUrl || !!exportStatus} style={{ width: '100%', backgroundColor: '#ec4899' }} onClick={handleExport3MF}>
+                  <Download size={16} /> Export 3MF (Multi-Plate)
+                </button>
+                <button disabled={!svgUrl} style={{ width: '100%', backgroundColor: '#475569', fontSize: '0.8rem', padding: '0.5rem' }} onClick={handleExport}>
+                  <Download size={14} /> Export STL (Raw)
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }
