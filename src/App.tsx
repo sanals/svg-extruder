@@ -106,6 +106,7 @@ function App() {
   const [isTracing, setIsTracing] = useState<string | null>(null);
   const [highlightStyle, setHighlightStyle] = useState<'dashed' | 'solid'>('dashed');
   const [sealGaps, setSealGaps] = useState<boolean>(true);
+  const [backingDepth, setBackingDepth] = useState<number>(2);
   const [cutOverlaps, setCutOverlaps] = useState<boolean>(true);
   const [selectSizeThreshold, setSelectSizeThreshold] = useState<number>(0);
   const [shapeAreasCache, setShapeAreasCache] = useState<{ id: string, area: number }[] | null>(null);
@@ -352,7 +353,7 @@ function App() {
     if (!rawSvgContent) { alert("No active model to save."); return; }
     const projectData = {
       rawSvgContent, colorCount, meshDepths, meshColorOverrides, selectedMeshIds,
-      highlightStyle, sealGaps, cutOverlaps, customScale, clearance, printerProfile, gridSize, mergeColors3MF
+      highlightStyle, sealGaps, backingDepth, cutOverlaps, customScale, clearance, printerProfile, gridSize, mergeColors3MF
     };
     const jsonString = JSON.stringify(projectData);
     const blob = new Blob([jsonString], { type: "application/json" });
@@ -379,6 +380,7 @@ function App() {
           setColorCount(projectData.colorCount || 8); setMeshDepths(projectData.meshDepths || {});
           setMeshColorOverrides(projectData.meshColorOverrides || {}); setSelectedMeshIds(projectData.selectedMeshIds || []);
           setHighlightStyle(projectData.highlightStyle || 'dashed'); setSealGaps(projectData.sealGaps ?? true);
+          setBackingDepth(projectData.backingDepth ?? 2);
           setCutOverlaps(projectData.cutOverlaps ?? true);
           if (projectData.customScale) setCustomScale(projectData.customScale);
           if (projectData.clearance !== undefined) setClearance(projectData.clearance);
@@ -1077,6 +1079,18 @@ function App() {
                   </span>
                 )}
               </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', color: '#cbd5e1' }}>
+                  <span>Backing Thickness (mm)</span>
+                  <span>{backingDepth}</span>
+                </div>
+                <HoverSlider 
+                  min="0" max="10" step="1" 
+                  value={backingDepth} 
+                  onChange={(val: number) => setBackingDepth(val)} 
+                  displayFormat={(v: number) => v.toString()} 
+                />
+              </div>
               <hr style={{ border: 'none', borderTop: '1px solid rgba(255,255,255,0.1)', margin: '0.5rem 0' }} />
               <div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', marginBottom: '4px', color: '#cbd5e1' }}>
@@ -1394,6 +1408,7 @@ function App() {
                       ref={svgModelRef}
                       svgUrl={svgUrl}
                       highlightStyle={highlightStyle}
+                      backingDepth={backingDepth}
                       sealGaps={sealGaps}
                       cutOverlaps={cutOverlaps}
                       selectedMeshIds={selectedMeshIds}

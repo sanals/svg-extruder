@@ -73,6 +73,7 @@ export interface SvgModelProps {
   sealGaps?: boolean;
   cutOverlaps?: boolean;
   highlightStyle?: 'dashed' | 'solid';
+  backingDepth?: number;
   selectedMeshIds: string[];
   meshDepths: Record<string, number>;
   meshColorOverrides: Record<string, string>;
@@ -169,7 +170,7 @@ const whiteStripes = createStripeTexture('rgba(255,255,255,0.7)');
 const blackStripes = createStripeTexture('rgba(0,0,0,0.5)');
 
 export const SvgModel = React.forwardRef<SvgModelRef, SvgModelProps>(({
-  svgUrl, sealGaps, cutOverlaps, highlightStyle = 'dashed', selectedMeshIds, previewMeshIds = [], meshDepths, meshColorOverrides = {}, onSelect, onVerticesCalculated, onParseProgress, onParseComplete
+  svgUrl, sealGaps, cutOverlaps, highlightStyle = 'dashed', backingDepth = 0, selectedMeshIds, previewMeshIds = [], meshDepths, meshColorOverrides = {}, onSelect, onVerticesCalculated, onParseProgress, onParseComplete
 }, ref) => {
   const svgData = useLoader(SVGLoader, svgUrl);
   const groupRef = React.useRef<THREE.Group>(null);
@@ -1491,9 +1492,11 @@ smoothSelected: async (selectedIds: string[], amount: number, onProgress: (msg: 
         const contrastColor = isLight ? "black" : "white";
 
         const depth = meshDepths[item.id] ?? 0;
+        const visualDepth = depth + backingDepth;
 
         // Base offset to prevent z-fighting (still slightly useful even after boolean subtraction due to precision issues)
-        const baseZOffset = index * 0.001;
+        // Offset by backingDepth backwards to preserve top surface Z positions
+        const baseZOffset = index * 0.001 - backingDepth;
         // If selected, add an offset larger than the maximum possible base offset so it jumps to the front
         const selectedZOffset = shapesWithColors.length * 0.001 + 0.1;
         const isPreviewed = previewMeshIds.includes(item.id);
@@ -1511,13 +1514,13 @@ smoothSelected: async (selectedIds: string[], amount: number, onProgress: (msg: 
               onSelect([item.id], e.shiftKey);
             }}
           >
-            {depth === 0 ? (
+            {visualDepth === 0 ? (
               <shapeGeometry args={[item.shapes]} />
             ) : (
               <extrudeGeometry
-                key={`extrude-${sealGaps}-${depth}`}
+                key={`extrude-${sealGaps}-${visualDepth}`}
                 args={[item.shapes, {
-                  depth,
+                  depth: visualDepth,
                   bevelEnabled: sealGaps,
                   bevelSize: sealGaps ? 0.2 : 0,
                   bevelThickness: sealGaps ? 0.05 : 0,
@@ -1529,17 +1532,17 @@ smoothSelected: async (selectedIds: string[], amount: number, onProgress: (msg: 
               color={baseColor}
               side={THREE.DoubleSide}
             />
-            {isSelected && highlightStyle === 'dashed' && <DashedEdges shapes={item.shapes} color={contrastColor} depth={depth} />}
-            {isPreviewed && <DashedEdges shapes={item.shapes} color="#ef4444" depth={depth} />}
+            {isSelected && highlightStyle === 'dashed' && <DashedEdges shapes={item.shapes} color={contrastColor} depth={visualDepth} />}
+            {isPreviewed && <DashedEdges shapes={item.shapes} color="#ef4444" depth={visualDepth} />}
             {isSelected && highlightStyle === 'solid' && (
-              <mesh position={[0, 0, depth + 0.1]}>
-                {depth === 0 ? (
+              <mesh position={[0, 0, visualDepth + 0.1]}>
+                {visualDepth === 0 ? (
                   <shapeGeometry args={[item.shapes]} />
                 ) : (
                   <extrudeGeometry
-                    key={`extrude-overlay-${sealGaps}-${depth}`}
+                    key={`extrude-overlay-${sealGaps}-${visualDepth}`}
                     args={[item.shapes, {
-                      depth,
+                      depth: visualDepth,
                       bevelEnabled: sealGaps,
                       bevelSize: sealGaps ? 0.2 : 0,
                       bevelThickness: sealGaps ? 0.05 : 0,
