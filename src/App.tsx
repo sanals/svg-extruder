@@ -205,13 +205,15 @@ function App() {
   const pushToHistory = () => {
     if (!svgModelRef.current) return;
     setShapeAreasCache(null); // Clear size cache when operations occur
+    setRedoHistory([]);
     setHistory(prev => [
       ...prev,
       {
         meshDepths: { ...meshDepths },
         meshColorOverrides: { ...meshColorOverrides },
         meshColors: [...meshColors],
-        shapes: svgModelRef.current?.getShapes()
+        shapes: svgModelRef.current?.getShapes(),
+        selectedMeshIds: [...selectedMeshIds]
       }
     ]);
   };
@@ -306,14 +308,16 @@ function App() {
 
         const processRing = (ring: any) => {
           if (ring.length === 0) return '';
-          let pathStr = `M ${ring[0].x} ${-ring[0].y} `;
-          minX = Math.min(minX, ring[0].x); minY = Math.min(minY, -ring[0].y);
-          maxX = Math.max(maxX, ring[0].x); maxY = Math.max(maxY, -ring[0].y);
+          // Use raw Y (not negated) because shape coords are already in SVG space (Y-down)
+          // The 3D view flips Y via scale=[0.1, -0.1, 0.1] on the group
+          let pathStr = `M ${ring[0].x} ${ring[0].y} `;
+          minX = Math.min(minX, ring[0].x); minY = Math.min(minY, ring[0].y);
+          maxX = Math.max(maxX, ring[0].x); maxY = Math.max(maxY, ring[0].y);
 
           for (let i = 1; i < ring.length; i++) {
-            pathStr += `L ${ring[i].x} ${-ring[i].y} `;
-            minX = Math.min(minX, ring[i].x); minY = Math.min(minY, -ring[i].y);
-            maxX = Math.max(maxX, ring[i].x); maxY = Math.max(maxY, -ring[i].y);
+            pathStr += `L ${ring[i].x} ${ring[i].y} `;
+            minX = Math.min(minX, ring[i].x); minY = Math.min(minY, ring[i].y);
+            maxX = Math.max(maxX, ring[i].x); maxY = Math.max(maxY, ring[i].y);
           }
           return pathStr + 'Z ';
         };
@@ -339,7 +343,9 @@ function App() {
     const padding = Math.max(width, height) * 0.05;
     const viewBox = `${minX - padding} ${minY - padding} ${width + padding * 2} ${height + padding * 2}`;
 
-    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBox}">\n  ${paths.join('\n  ')}\n</svg>`;
+    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBox}">
+  ${paths.join('\n  ')}
+</svg>`;
   };
 
   const handleSaveProject = () => {
@@ -600,21 +606,28 @@ function App() {
     const file = e.target.files?.[0];
     if (file) {
       if (file.type === 'image/svg+xml') {
-        const url = URL.createObjectURL(file);
         setIsTracing("Loading SVG Geometry...");
-
-        // Yield to allow React to paint the loading screen before blocking the thread
-        setTimeout(() => {
-          setSvgUrl(url);
-          setImageDataUrl(null);
-          setSelectedMeshIds([]);
-          setMeshDepths({});
-          setVertexCount(0); // Reset vertices
-          setHistory([]); // Reset history
-          setMeshColors([]); // Reset colors
-          setMeshColorOverrides({});
-          setIsMerging(false);
-        }, 50);
+        // Read file as text so rawSvgContent is set (needed for Save Project)
+        const reader = new FileReader();
+        reader.onload = (evt) => {
+          const svgText = evt.target?.result as string;
+          const blob = new Blob([svgText], { type: 'image/svg+xml' });
+          const url = URL.createObjectURL(blob);
+          // Yield to allow React to paint the loading screen before blocking the thread
+          setTimeout(() => {
+            setRawSvgContent(svgText);
+            setSvgUrl(url);
+            setImageDataUrl(null);
+            setSelectedMeshIds([]);
+            setMeshDepths({});
+            setVertexCount(0); // Reset vertices
+            setHistory([]); // Reset history
+            setMeshColors([]); // Reset colors
+            setMeshColorOverrides({});
+            setIsMerging(false);
+          }, 50);
+        };
+        reader.readAsText(file);
       } else if (file.type === 'image/png' || file.type === 'image/jpeg' || file.type === 'image/webp') {
         const url = URL.createObjectURL(file);
         setIsTracing("Step 1/3: Loading Image...");
@@ -708,36 +721,86 @@ function App() {
   };
 
   const handleUndo = useCallback(() => {
-    setHistory(prev => {
-      if (prev.length === 0) return prev;
-      const snapshot = prev[prev.length - 1];
+    if (history.length === 0) return;
+    
+    // Save current state for redo (including current selection)
+    const currentState = {
+      meshDepths: { ...meshDepths },
+      meshColorOverrides: { ...meshColorOverrides },
+      meshColors: [...meshColors],
+      shapes: svgModelRef.current?.getShapes(),
+      selectedMeshIds: [...selectedMeshIds]
+    };
+    
+    const snapshot = history[history.length - 1];
+    
+    setRedoHistory(prev => [...prev, currentState]);
+    setHistory(prev => prev.slice(0, -1));
+    
+    // Apply snapshot
+    setMeshDepths(snapshot.meshDepths);
+    setMeshColorOverrides(snapshot.meshColorOverrides);
+    setMeshColors(snapshot.meshColors);
+    if (svgModelRef.current && snapshot.shapes) {
+      svgModelRef.current.setShapes(snapshot.shapes);
+    }
+    // Restore selection if it was saved
+    if (snapshot.selectedMeshIds) {
+      setSelectedMeshIds(snapshot.selectedMeshIds);
+    } else {
+      setSelectedMeshIds([]);
+    }
+  }, [history, meshDepths, meshColorOverrides, meshColors, selectedMeshIds]);
 
-      // Delay side effects out of the pure updater function to ensure React batches them correctly
-      setTimeout(() => {
-        setMeshDepths(snapshot.meshDepths);
-        setMeshColorOverrides(snapshot.meshColorOverrides);
-        setMeshColors(snapshot.meshColors);
-        if (svgModelRef.current && snapshot.shapes) {
-          svgModelRef.current.setShapes(snapshot.shapes);
-        }
-        setSelectedMeshIds([]); // Clear selection to prevent ghosting
-      }, 0);
+  const handleRedo = useCallback(() => {
+    if (redoHistory.length === 0) return;
+    
+    // Save current state for undo (including current selection)
+    const currentState = {
+      meshDepths: { ...meshDepths },
+      meshColorOverrides: { ...meshColorOverrides },
+      meshColors: [...meshColors],
+      shapes: svgModelRef.current?.getShapes(),
+      selectedMeshIds: [...selectedMeshIds]
+    };
+    
+    const snapshot = redoHistory[redoHistory.length - 1];
+    
+    setHistory(prev => [...prev, currentState]);
+    setRedoHistory(prev => prev.slice(0, -1));
+    
+    // Apply snapshot
+    setMeshDepths(snapshot.meshDepths);
+    setMeshColorOverrides(snapshot.meshColorOverrides);
+    setMeshColors(snapshot.meshColors);
+    if (svgModelRef.current && snapshot.shapes) {
+      svgModelRef.current.setShapes(snapshot.shapes);
+    }
+    if (snapshot.selectedMeshIds) {
+      setSelectedMeshIds(snapshot.selectedMeshIds);
+    } else {
+      setSelectedMeshIds([]);
+    }
+  }, [redoHistory, meshDepths, meshColorOverrides, meshColors, selectedMeshIds]);
 
-      return prev.slice(0, -1);
-    });
-  }, []);
-
-  // Handle hotkeys (Undo)
+  // Handle hotkeys (Undo/Redo)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
         e.preventDefault();
-        handleUndo();
+        if (e.shiftKey) {
+          handleRedo();
+        } else {
+          handleUndo();
+        }
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') {
+        e.preventDefault();
+        handleRedo();
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, []);
+  }, [handleUndo, handleRedo]);
 
   const handleSelectBySizeChange = (val: number) => {
     setSelectSizeThreshold(val);
@@ -888,20 +951,36 @@ function App() {
               <div style={{ fontSize: '0.85rem', fontWeight: 600, color: vertexCount > 100000 ? '#ef4444' : '#e2e8f0' }}>{vertexCount.toLocaleString()} Vertices</div>
             </div>
           )}
-          <button
-            onClick={handleUndo}
-            disabled={history.length === 0}
-            style={{
-              padding: '0.4rem 0.75rem', display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.8rem',
-              backgroundColor: history.length > 0 ? '#3b82f6' : 'transparent',
-              color: history.length > 0 ? 'white' : '#64748b',
-              border: history.length > 0 ? 'none' : '1px solid rgba(255,255,255,0.1)',
-              borderRadius: '6px', cursor: history.length > 0 ? 'pointer' : 'not-allowed'
-            }}
-            title="Undo last change (Ctrl+Z)"
-          >
-            <Undo size={14} /> Undo
-          </button>
+          <div style={{ display: 'flex', gap: '0.5rem' }}>
+            <button
+              onClick={handleUndo}
+              disabled={history.length === 0}
+              style={{
+                padding: '0.4rem 0.75rem', display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.8rem',
+                backgroundColor: history.length > 0 ? '#3b82f6' : 'transparent',
+                color: history.length > 0 ? 'white' : '#64748b',
+                border: history.length > 0 ? 'none' : '1px solid rgba(255,255,255,0.1)',
+                borderRadius: '6px', cursor: history.length > 0 ? 'pointer' : 'not-allowed'
+              }}
+              title="Undo last change (Ctrl+Z)"
+            >
+              <Undo size={14} /> Undo
+            </button>
+            <button
+              onClick={handleRedo}
+              disabled={redoHistory.length === 0}
+              style={{
+                padding: '0.4rem 0.75rem', display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.8rem',
+                backgroundColor: redoHistory.length > 0 ? '#3b82f6' : 'transparent',
+                color: redoHistory.length > 0 ? 'white' : '#64748b',
+                border: redoHistory.length > 0 ? 'none' : '1px solid rgba(255,255,255,0.1)',
+                borderRadius: '6px', cursor: redoHistory.length > 0 ? 'pointer' : 'not-allowed'
+              }}
+              title="Redo (Ctrl+Y or Ctrl+Shift+Z)"
+            >
+              <Redo size={14} /> Redo
+            </button>
+          </div>
         </div>
       </div>
 
