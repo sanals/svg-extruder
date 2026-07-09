@@ -693,7 +693,7 @@ smoothSelected: async (selectedIds: string[], amount: number, onProgress: (msg: 
 
     
     
-    generateUniformLineArt: async (widthAmount: number, lightShapeIds: string[], darkShapeIds: string[], onProgress: (msg: string) => void) => {
+    generateUniformLineArt: async (widthAmount: number, lightShapeIds: string[], _darkShapeIds: string[], onProgress: (msg: string) => void) => {
       if (shapesWithColors.length === 0) return null;
 
       onProgress("Generating uniform line art...");
@@ -701,34 +701,104 @@ smoothSelected: async (selectedIds: string[], amount: number, onProgress: (msg: 
 
       const scale = 10000;
       const widthScaled = (widthAmount / 2) * scale;
-      const whiteCo = new ClipperLib.ClipperOffset();
+
+      const getPaths = (tree: any) => {
+        const paths: any[] = [];
+        const getPolys = (node: any) => {
+           paths.push(node.Contour());
+           node.Childs().forEach(getPolys);
+        };
+        tree.Childs().forEach(getPolys);
+        return paths;
+      };
+
+      const expandedLightShapes: any[][][] = [];
 
       shapesWithColors.forEach(item => {
-        if (!lightShapeIds.includes(item.id) && !darkShapeIds.includes(item.id)) return;
+        if (!lightShapeIds.includes(item.id)) return;
         
         item.shapes.forEach(shape => {
           const polygon = shapeToPolygon(shape);
+          const co = new ClipperLib.ClipperOffset();
+          let hasValidRings = false;
           for (let i = 0; i < polygon.length; i++) {
              const ring = polygon[i];
              if (ring.length < 3) continue;
+             hasValidRings = true;
              const clipperPath = ring.map(p => ({ X: Math.round(p[0] * scale), Y: Math.round(p[1] * scale) }));
              const isOuter = (i === 0);
              if (isOuter !== ClipperLib.Clipper.Orientation(clipperPath)) clipperPath.reverse();
-             
-             // @ts-ignore
-             if (lightShapeIds.includes(item.id)) {
-               // @ts-ignore
-               whiteCo.AddPath(clipperPath, ClipperLib.JoinType.jtRound, ClipperLib.EndType.etClosedLine);
-             }
+             co.AddPath(clipperPath, ClipperLib.JoinType.jtRound, ClipperLib.EndType.etClosedPolygon);
+          }
+          if (hasValidRings) {
+            const tree = new ClipperLib.PolyTree();
+            co.Execute(tree, widthScaled);
+            const paths = getPaths(tree);
+            if (paths.length > 0) expandedLightShapes.push(paths);
           }
         });
       });
 
-      // @ts-ignore
-      const whiteTree = new ClipperLib.PolyTree();
-      whiteCo.Execute(whiteTree, widthScaled);
+      const processShapes = (shapes: any[][][]): { union: any[], overlaps: any[] } => {
+          if (shapes.length === 0) return { union: [], overlaps: [] };
+          if (shapes.length === 1) return { union: shapes[0], overlaps: [] };
+          if (shapes.length === 2) {
+              const cUnion = new ClipperLib.Clipper();
+              cUnion.AddPaths(shapes[0], ClipperLib.PolyType.ptSubject, true);
+              cUnion.AddPaths(shapes[1], ClipperLib.PolyType.ptClip, true);
+              const tUnion = new ClipperLib.PolyTree();
+              cUnion.Execute(ClipperLib.ClipType.ctUnion, tUnion, ClipperLib.PolyFillType.pftNonZero, ClipperLib.PolyFillType.pftNonZero);
+              
+              const cInt = new ClipperLib.Clipper();
+              cInt.AddPaths(shapes[0], ClipperLib.PolyType.ptSubject, true);
+              cInt.AddPaths(shapes[1], ClipperLib.PolyType.ptClip, true);
+              const tInt = new ClipperLib.PolyTree();
+              cInt.Execute(ClipperLib.ClipType.ctIntersection, tInt, ClipperLib.PolyFillType.pftNonZero, ClipperLib.PolyFillType.pftNonZero);
+              
+              return { union: getPaths(tUnion), overlaps: getPaths(tInt) };
+          }
+          
+          const mid = Math.floor(shapes.length / 2);
+          const left = processShapes(shapes.slice(0, mid));
+          const right = processShapes(shapes.slice(mid));
+          
+          const cUnion = new ClipperLib.Clipper();
+          cUnion.AddPaths(left.union, ClipperLib.PolyType.ptSubject, true);
+          cUnion.AddPaths(right.union, ClipperLib.PolyType.ptClip, true);
+          const tUnion = new ClipperLib.PolyTree();
+          cUnion.Execute(ClipperLib.ClipType.ctUnion, tUnion, ClipperLib.PolyFillType.pftNonZero, ClipperLib.PolyFillType.pftNonZero);
+          
+          const cInt = new ClipperLib.Clipper();
+          cInt.AddPaths(left.union, ClipperLib.PolyType.ptSubject, true);
+          cInt.AddPaths(right.union, ClipperLib.PolyType.ptClip, true);
+          const tInt = new ClipperLib.PolyTree();
+          cInt.Execute(ClipperLib.ClipType.ctIntersection, tInt, ClipperLib.PolyFillType.pftNonZero, ClipperLib.PolyFillType.pftNonZero);
+          
+          const cOverUnion1 = new ClipperLib.Clipper();
+          cOverUnion1.AddPaths(left.overlaps, ClipperLib.PolyType.ptSubject, true);
+          cOverUnion1.AddPaths(right.overlaps, ClipperLib.PolyType.ptClip, true);
+          const tOver1 = new ClipperLib.PolyTree();
+          cOverUnion1.Execute(ClipperLib.ClipType.ctUnion, tOver1, ClipperLib.PolyFillType.pftNonZero, ClipperLib.PolyFillType.pftNonZero);
+          
+          const cOverUnion2 = new ClipperLib.Clipper();
+          cOverUnion2.AddPaths(getPaths(tOver1), ClipperLib.PolyType.ptSubject, true);
+          cOverUnion2.AddPaths(getPaths(tInt), ClipperLib.PolyType.ptClip, true);
+          const tOver2 = new ClipperLib.PolyTree();
+          cOverUnion2.Execute(ClipperLib.ClipType.ctUnion, tOver2, ClipperLib.PolyFillType.pftNonZero, ClipperLib.PolyFillType.pftNonZero);
+          
+          return { union: getPaths(tUnion), overlaps: getPaths(tOver2) };
+      };
+
+      const result = processShapes(expandedLightShapes);
       
-      const finalTree = whiteTree;
+      const finalClipper = new ClipperLib.Clipper();
+      if (result.overlaps.length > 0) {
+        finalClipper.AddPaths(result.overlaps, ClipperLib.PolyType.ptSubject, true);
+      }
+      const finalTree = new ClipperLib.PolyTree();
+      if (result.overlaps.length > 0) {
+        finalClipper.Execute(ClipperLib.ClipType.ctUnion, finalTree, ClipperLib.PolyFillType.pftNonZero, ClipperLib.PolyFillType.pftNonZero);
+      }
 
       const parsePolyNode = (node: any, multiPoly: MultiPolygon) => {
         if (!node.IsHole()) {
