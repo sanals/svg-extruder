@@ -1597,7 +1597,7 @@ function App() {
                 <HoverSlider
                   min="0" max="10" step="1"
                   value={backingDepth}
-                  onChange={(val: number) => setBackingDepth(val)}
+                  onChange={(e: any) => setBackingDepth(parseFloat(e.target.value))}
                   displayFormat={(v: number) => v.toString()}
                 />
               </div>
