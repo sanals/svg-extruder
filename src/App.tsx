@@ -9,7 +9,7 @@ import ImageTracer from 'imagetracerjs';
 import { SvgModel, type SvgModelRef } from './components/SvgModel';
 import './index.css';
 
-const HoverSlider = ({ min, max, step, value, onChange, onPointerDown, disabled, style, id, displayFormat = (v: number) => v.toFixed(1) }: any) => {
+const HoverSlider = ({ min, max, step, value, onChange, onPointerDown, disabled, style, id, displayFormat = (v: number) => v.toFixed(1), tooltipPosition = 'top' }: any) => {
   const [hoverVal, setHoverVal] = useState<number | null>(null);
   const [hoverX, setHoverX] = useState<number>(0);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -50,7 +50,7 @@ const HoverSlider = ({ min, max, step, value, onChange, onPointerDown, disabled,
       {hoverVal !== null && (
         <div style={{
           position: 'absolute',
-          top: '-28px',
+          top: tooltipPosition === 'bottom' ? '36px' : '-28px',
           left: `${hoverX}%`,
           transform: 'translateX(-50%)',
           backgroundColor: '#3b82f6',
@@ -68,12 +68,17 @@ const HoverSlider = ({ min, max, step, value, onChange, onPointerDown, disabled,
           {displayFormat(hoverVal)}
           <div style={{
             position: 'absolute',
-            bottom: '-5px',
+            ...(tooltipPosition === 'bottom' ? {
+              top: '-5px',
+              borderBottom: '5px solid #3b82f6',
+            } : {
+              bottom: '-5px',
+              borderTop: '5px solid #3b82f6',
+            }),
             left: '50%',
             transform: 'translateX(-50%)',
             borderLeft: '5px solid transparent',
             borderRight: '5px solid transparent',
-            borderTop: '5px solid #3b82f6',
           }} />
         </div>
       )}
@@ -1123,10 +1128,10 @@ function App() {
         <h1 className="sidebar-header" style={{ margin: 0, fontSize: '1.25rem' }}>SVG Extruder 3D</h1>
 
         {selectedMeshIds.length > 0 && (
-          <div style={{ position: 'absolute', left: '50%', transform: 'translateX(-50%)', display: 'flex', alignItems: 'center', gap: '1rem', width: '400px' }}>
+          <div style={{ position: 'absolute', left: '50%', transform: 'translateX(-50%)', display: 'flex', alignItems: 'center', gap: '1rem', width: '600px' }}>
             <span style={{ fontSize: '0.85rem', fontWeight: 600, color: '#60a5fa', whiteSpace: 'nowrap' }}>Extrusion Depth</span>
             <div style={{ flex: 1, padding: '0 0.5rem' }}>
-                <HoverSlider id="depth-slider" min="0" max="20" step="0.1" value={currentDepth} onChange={handleDepthChange} onPointerDown={handleDepthPointerDown} disabled={selectedMeshIds.length === 0} />
+                <HoverSlider id="depth-slider" min="0" max="20" step="0.1" value={currentDepth} onChange={handleDepthChange} onPointerDown={handleDepthPointerDown} disabled={selectedMeshIds.length === 0} tooltipPosition="bottom" />
             </div>
             <span style={{ fontSize: '1.1rem', fontWeight: 700, color: '#f8fafc', whiteSpace: 'nowrap', width: '60px', textAlign: 'right' }}>{currentDepth.toFixed(1)} <span style={{fontSize: '0.7rem', color: '#94a3b8', fontWeight: 'normal'}}>mm</span></span>
           </div>
@@ -1525,7 +1530,6 @@ function App() {
               <directionalLight position={[10, 10, 10]} intensity={1} castShadow />
               <OrbitControls makeDefault />
               <Suspense fallback={null}>
-                <Center>
                   <group ref={sceneRef}>
                     <SvgModel
                       ref={svgModelRef}
@@ -1563,7 +1567,6 @@ function App() {
                       }}
                     />
                   </group>
-                </Center>
               </Suspense>
             </Canvas>
           )}

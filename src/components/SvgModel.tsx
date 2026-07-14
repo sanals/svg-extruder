@@ -4,9 +4,7 @@ import { SVGLoader } from 'three/examples/jsm/loaders/SVGLoader.js';
 import * as ClipperLib from 'clipper-lib';
 import type { PrintPlate, PrintItem } from '../lib/generic-3mf-exporter';
 import { buildMultiPlate3MF } from '../lib/generic-3mf-exporter';
-import { useLoader } from '@react-three/fiber';
-
-// --- HELPER TYPES FOR POLYGON CLIPPING ---
+import { useLoader, useThree } from '@react-three/fiber';
 type Pair = [number, number];
 type Ring = Pair[];
 type Polygon = Ring[];
@@ -1633,9 +1631,61 @@ smoothSelected: async (selectedIds: string[], amount: number, onProgress: (msg: 
     }
   }, [shapesWithColors, onVerticesCalculated, meshDepths]);
 
+  const { invalidate, camera, controls } = useThree();
+  const [centerOffset, setCenterOffset] = React.useState<[number, number, number]>([0, 0, 0]);
+  const [centeredShapes, setCenteredShapes] = React.useState<any[] | null>(null);
+
+  React.useLayoutEffect(() => {
+    if (shapesWithColors.length > 0 && groupRef.current) {
+      // Force update the world matrix so the bounding box is accurate
+      groupRef.current.updateMatrixWorld(true);
+      
+      const box = new THREE.Box3().setFromObject(groupRef.current);
+      if (!box.isEmpty()) {
+        const center = new THREE.Vector3();
+        box.getCenter(center);
+        
+        // Store the negative center to apply as an offset, ensuring the center aligns with 0,0,0
+        setCenterOffset([-center.x, -center.y, -center.z]);
+
+        // Automatically zoom the camera to fit the SVG
+        const size = new THREE.Vector3();
+        box.getSize(size);
+        
+        const fov = (camera as THREE.PerspectiveCamera).fov * (Math.PI / 180);
+        const aspect = (camera as THREE.PerspectiveCamera).aspect || 1;
+        
+        let dist = (size.y / 2) / Math.tan(fov / 2);
+        if (size.x / aspect > size.y) {
+          dist = (size.x / aspect / 2) / Math.tan(fov / 2);
+        }
+        
+        // Add 20% padding and a minimum distance to prevent clipping
+        dist = Math.max(dist * 1.2, 10);
+        
+        camera.position.set(0, 0, dist);
+        camera.updateProjectionMatrix();
+        
+        if (controls) {
+          (controls as any).target.set(0, 0, 0);
+          (controls as any).update();
+        }
+      }
+      
+      setCenteredShapes(shapesWithColors);
+      invalidate();
+      const timer = setTimeout(() => invalidate(), 50);
+      return () => clearTimeout(timer);
+    } else {
+      setCenterOffset([0, 0, 0]);
+      setCenteredShapes(shapesWithColors);
+    }
+  }, [shapesWithColors, invalidate, meshDepths, camera, controls]);
+
   return (
-    <group ref={groupRef} scale={[0.1, -0.1, 0.1]} position={[-5, 5, 0]}>
-      {shapesWithColors.map((item, index) => {
+    <group position={centerOffset} visible={centeredShapes === shapesWithColors}>
+      <group ref={groupRef} scale={[0.1, -0.1, 0.1]}>
+        {shapesWithColors.map((item, index) => {
         if (!item.shapes || item.shapes.length === 0) return null;
 
         const isSelected = selectedMeshIds.includes(item.id);
@@ -1724,6 +1774,7 @@ smoothSelected: async (selectedIds: string[], amount: number, onProgress: (msg: 
           </mesh>
         );
       })}
+      </group>
     </group>
   );
 });
