@@ -1,7 +1,7 @@
 import { useState, useRef, Suspense, useEffect, useCallback } from 'react';
 import { Upload, Download, Undo, Redo, LayoutGrid, Droplet, MoveVertical, Zap, SplitSquareHorizontal, LayoutTemplate, Network, WrapText, Combine, Wand2, Palette, Settings } from 'lucide-react';
 import { Canvas } from '@react-three/fiber';
-import { OrbitControls, Center } from '@react-three/drei';
+import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
 import * as BufferGeometryUtils from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { STLExporter } from 'three/examples/jsm/exporters/STLExporter.js';

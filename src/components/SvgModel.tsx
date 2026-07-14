@@ -1529,11 +1529,39 @@ smoothSelected: async (selectedIds: string[], amount: number, onProgress: (msg: 
         const finalizePolygons = (finalPolys: MultiPolygon[]) => {
           const individualShapes: { id: string, color: THREE.Color, colorHex: string, shapes: THREE.Shape[] }[] = [];
 
+          // Compute the bounding box center of ALL polygons so we can center them at the origin.
+          // This is the root fix for SVGs appearing in the bottom-right corner:
+          // SVG coordinates start at (0,0) top-left, so all content extends into positive X/Y.
+          // By subtracting the center, we shift everything so the origin is at the geometric center.
+          let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+          for (const multiPoly of finalPolys) {
+            for (const poly of multiPoly) {
+              for (const ring of poly) {
+                for (const [x, y] of ring) {
+                  if (x < minX) minX = x;
+                  if (x > maxX) maxX = x;
+                  if (y < minY) minY = y;
+                  if (y > maxY) maxY = y;
+                }
+              }
+            }
+          }
+          const cx = (minX + maxX) / 2;
+          const cy = (minY + maxY) / 2;
+
           finalPolys.forEach((multiPoly, index) => {
             if (multiPoly.length === 0) return;
             const color = svgData.paths[index].color;
             const colorHex = color.getHexString();
-            const shapes = multiPolygonToShapes(multiPoly);
+
+            // Offset polygons so they are centered around (0,0) before creating shapes
+            const centeredMultiPoly: MultiPolygon = multiPoly.map(poly =>
+              poly.map(ring =>
+                ring.map(([x, y]) => [x - cx, y - cy] as Pair)
+              )
+            );
+
+            const shapes = multiPolygonToShapes(centeredMultiPoly);
             individualShapes.push({ id: `shape_${index}`, color, colorHex, shapes });
           });
 
@@ -1632,23 +1660,17 @@ smoothSelected: async (selectedIds: string[], amount: number, onProgress: (msg: 
   }, [shapesWithColors, onVerticesCalculated, meshDepths]);
 
   const { invalidate, camera, controls } = useThree();
-  const [centerOffset, setCenterOffset] = React.useState<[number, number, number]>([0, 0, 0]);
-  const [centeredShapes, setCenteredShapes] = React.useState<any[] | null>(null);
+  const lastFittedUrl = React.useRef<string | null>(null);
 
+  // Zoom-to-fit: runs only when a NEW SVG is loaded (svgUrl changes), not on undo/redo/depth edits
   React.useLayoutEffect(() => {
-    if (shapesWithColors.length > 0 && groupRef.current) {
-      // Force update the world matrix so the bounding box is accurate
-      groupRef.current.updateMatrixWorld(true);
-      
-      const box = new THREE.Box3().setFromObject(groupRef.current);
-      if (!box.isEmpty()) {
-        const center = new THREE.Vector3();
-        box.getCenter(center);
-        
-        // Store the negative center to apply as an offset, ensuring the center aligns with 0,0,0
-        setCenterOffset([-center.x, -center.y, -center.z]);
+    if (shapesWithColors.length > 0 && groupRef.current && svgUrl !== lastFittedUrl.current) {
+      lastFittedUrl.current = svgUrl;
 
-        // Automatically zoom the camera to fit the SVG
+      groupRef.current.updateMatrixWorld(true);
+      const box = new THREE.Box3().setFromObject(groupRef.current);
+
+      if (!box.isEmpty()) {
         const size = new THREE.Vector3();
         box.getSize(size);
         
@@ -1672,20 +1694,18 @@ smoothSelected: async (selectedIds: string[], amount: number, onProgress: (msg: 
         }
       }
       
-      setCenteredShapes(shapesWithColors);
       invalidate();
-      const timer = setTimeout(() => invalidate(), 50);
-      return () => clearTimeout(timer);
-    } else {
-      setCenterOffset([0, 0, 0]);
-      setCenteredShapes(shapesWithColors);
     }
-  }, [shapesWithColors, invalidate, meshDepths, camera, controls]);
+  }, [shapesWithColors, invalidate, camera, controls, svgUrl]);
+
+  // Invalidate on depth changes so the render updates
+  React.useEffect(() => {
+    invalidate();
+  }, [meshDepths, invalidate]);
 
   return (
-    <group position={centerOffset} visible={centeredShapes === shapesWithColors}>
-      <group ref={groupRef} scale={[0.1, -0.1, 0.1]}>
-        {shapesWithColors.map((item, index) => {
+    <group ref={groupRef} scale={[0.1, -0.1, 0.1]}>
+      {shapesWithColors.map((item, index) => {
         if (!item.shapes || item.shapes.length === 0) return null;
 
         const isSelected = selectedMeshIds.includes(item.id);
@@ -1775,6 +1795,5 @@ smoothSelected: async (selectedIds: string[], amount: number, onProgress: (msg: 
         );
       })}
       </group>
-    </group>
   );
 });
