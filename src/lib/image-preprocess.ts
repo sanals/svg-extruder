@@ -1032,6 +1032,8 @@ export function preprocessCanvas(
   morphologicalOpenIndexed(data, width, height, bgMask, background);
   snapTwoColorBoundaries(data, width, height, bgMask);
   despeckleIndexed(data, width, height, bgMask, 2);
+  // Second snap after despeckle collapses leftover midtone stair ribbons.
+  snapTwoColorBoundaries(data, width, height, bgMask);
 
   // Rebuild palette from the cleaned raster so ImageTracer sees only consolidated colors.
   palette = extractPaletteFromImage(data, width, height, bgMask, background);
