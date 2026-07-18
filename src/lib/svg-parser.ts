@@ -1,8 +1,83 @@
-import type { ShapeItem, Polygon, MultiPolygon, Ring, Pair } from '../types';
+import type { ShapeItem, MultiPolygon, Ring, Pair } from '../types';
 import { shapeToPolygon, multiPolygonToShapes } from '../lib/clipper-utils';
 import { getBoundingBox, boxesIntersect, performClipperBoolean } from '../lib/clipper-utils';
 import * as THREE from 'three';
 import * as ClipperLib from 'clipper-lib';
+
+function parseCssColor(input: string | undefined | null): THREE.Color | null {
+  if (!input || input === 'none') return null;
+  const value = input === 'currentColor' ? '#000000' : input;
+  try {
+    return new THREE.Color().setStyle(value);
+  } catch {
+    return null;
+  }
+}
+
+function colorsMatch(a: string | undefined | null, b: string | undefined | null): boolean {
+  const ca = parseCssColor(a);
+  const cb = parseCssColor(b);
+  if (!ca || !cb) return false;
+  return ca.getHex() === cb.getHex();
+}
+
+function offsetPathToMultiPoly(path: any, strokeWidth: number): MultiPolygon {
+  const scale = 10000;
+  const co = new ClipperLib.ClipperOffset();
+
+  path.subPaths.forEach((subPath: any) => {
+    const points = subPath.getPoints();
+    if (points.length < 2) return;
+
+    const clipperPath = points.map((p: any) => ({ X: Math.round(p.x * scale), Y: Math.round(p.y * scale) }));
+    const isClosed = points[0].distanceTo(points[points.length - 1]) < 0.01;
+    const endType = isClosed ? ClipperLib.EndType.etClosedPolygon : ClipperLib.EndType.etOpenSquare;
+
+    co.AddPath(clipperPath, ClipperLib.JoinType.jtMiter, endType);
+  });
+
+  // @ts-ignore
+  const solutionTree = new ClipperLib.PolyTree();
+  co.Execute(solutionTree, (strokeWidth / 2) * scale);
+
+  const strokeMultiPoly: MultiPolygon = [];
+  const parsePolyNode = (node: any, multiPoly: MultiPolygon) => {
+    if (!node.IsHole()) {
+      const ring: Ring = node.Contour().map((p: any) => [p.X / scale, p.Y / scale]);
+      if (ring.length > 0 && (ring[0][0] !== ring[ring.length - 1][0] || ring[0][1] !== ring[ring.length - 1][1])) ring.push([...ring[0]]);
+      const poly = [ring];
+
+      node.Childs().forEach((child: any) => {
+        const holeRing: Ring = child.Contour().map((p: any) => [p.X / scale, p.Y / scale]);
+        if (holeRing.length > 0 && (holeRing[0][0] !== holeRing[holeRing.length - 1][0] || holeRing[0][1] !== holeRing[holeRing.length - 1][1])) holeRing.push([...holeRing[0]]);
+        poly.push(holeRing);
+
+        child.Childs().forEach((nestedNode: any) => parsePolyNode(nestedNode, multiPoly));
+      });
+      if (poly[0].length > 0) multiPoly.push(poly);
+    }
+  };
+
+  // @ts-ignore
+  solutionTree.Childs().forEach((child: any) => parsePolyNode(child, strokeMultiPoly));
+  return strokeMultiPoly;
+}
+
+function pushLayer(
+  layerPolygons: MultiPolygon[],
+  layerBBoxes: { minX: number, minY: number, maxX: number, maxY: number }[],
+  newSvgDataPaths: any[],
+  path: any,
+  multiPoly: MultiPolygon,
+  colorCss: string,
+) {
+  if (multiPoly.length === 0) return;
+  layerPolygons.push(multiPoly);
+  layerBBoxes.push(getBoundingBox(multiPoly));
+  const layerPath = Object.assign(Object.create(Object.getPrototypeOf(path)), path);
+  layerPath.color = new THREE.Color().setStyle(colorCss === 'currentColor' ? '#000000' : colorCss);
+  newSvgDataPaths.push(layerPath);
+}
 
 export const processGeometry = async (
   svgData: any,
@@ -36,79 +111,57 @@ export const processGeometry = async (
     if (node && processedNodes.has(node)) continue;
     if (node) processedNodes.add(node);
 
-    // Process STROKE geometry natively via Polygon Buffering!
     let strokeColor = (path.userData?.style as any)?.stroke;
     if (strokeColor === 'currentColor') strokeColor = '#000000';
     let rawStrokeWidth = (path.userData?.style as any)?.strokeWidth;
     const strokeWidth = (rawStrokeWidth !== undefined && rawStrokeWidth !== null) ? parseFloat(rawStrokeWidth.toString()) : 1;
 
-    if (strokeColor !== undefined && strokeColor !== 'none' && !isNaN(strokeWidth) && strokeWidth > 0) {
-      const scale = 10000;
-      const co = new ClipperLib.ClipperOffset();
-
-      path.subPaths.forEach((subPath: any) => {
-        const points = subPath.getPoints();
-        if (points.length < 2) return;
-
-        const clipperPath = points.map((p: any) => ({ X: Math.round(p.x * scale), Y: Math.round(p.y * scale) }));
-        const isClosed = points[0].distanceTo(points[points.length - 1]) < 0.01;
-        const endType = isClosed ? ClipperLib.EndType.etClosedPolygon : ClipperLib.EndType.etOpenSquare;
-
-        co.AddPath(clipperPath, ClipperLib.JoinType.jtMiter, endType);
-      });
-
-      // @ts-ignore
-      const solutionTree = new ClipperLib.PolyTree();
-      co.Execute(solutionTree, (strokeWidth / 2) * scale);
-
-      if (solutionTree.ChildCount() > 0) {
-        let strokeMultiPoly: MultiPolygon = [];
-
-        const parsePolyNode = (node: any, multiPoly: MultiPolygon) => {
-          if (!node.IsHole()) {
-            const ring: Ring = node.Contour().map((p: any) => [p.X / scale, p.Y / scale]);
-            if (ring.length > 0 && (ring[0][0] !== ring[ring.length - 1][0] || ring[0][1] !== ring[ring.length - 1][1])) ring.push([...ring[0]]);
-            const poly = [ring];
-
-            node.Childs().forEach((child: any) => {
-              const holeRing: Ring = child.Contour().map((p: any) => [p.X / scale, p.Y / scale]);
-              if (holeRing.length > 0 && (holeRing[0][0] !== holeRing[holeRing.length - 1][0] || holeRing[0][1] !== holeRing[holeRing.length - 1][1])) holeRing.push([...holeRing[0]]);
-              poly.push(holeRing);
-
-              child.Childs().forEach((nestedNode: any) => parsePolyNode(nestedNode, multiPoly));
-            });
-            if (poly[0].length > 0) multiPoly.push(poly);
-          }
-        };
-
-        // @ts-ignore
-        solutionTree.Childs().forEach((child: any) => parsePolyNode(child, strokeMultiPoly));
-
-        if (strokeMultiPoly.length > 0) {
-          layerPolygons.push(strokeMultiPoly);
-          layerBBoxes.push(getBoundingBox(strokeMultiPoly));
-          const strokePath = Object.assign(Object.create(Object.getPrototypeOf(path)), path);
-          strokePath.color = new THREE.Color().setStyle(strokeColor);
-          newSvgDataPaths.push(strokePath);
-        }
-      }
-    }
-
-    // Process FILL geometry
     let fillColor = (path.userData?.style as any)?.fill;
     if (fillColor === 'currentColor') fillColor = '#000000';
-    if (fillColor !== undefined && fillColor !== 'none') {
+
+    let strokeMultiPoly: MultiPolygon = [];
+    const hasStroke =
+      strokeColor !== undefined &&
+      strokeColor !== 'none' &&
+      !isNaN(strokeWidth) &&
+      strokeWidth > 0;
+    if (hasStroke) {
+      strokeMultiPoly = offsetPathToMultiPoly(path, strokeWidth);
+    }
+
+    let fillMultiPoly: MultiPolygon = [];
+    const hasFill = fillColor !== undefined && fillColor !== 'none';
+    if (hasFill) {
       // @ts-ignore
       const shapes = path.toShapes(true);
-      let multiPoly: MultiPolygon = shapes.map(shapeToPolygon);
+      fillMultiPoly = shapes.map(shapeToPolygon);
+    }
 
-      if (multiPoly.length > 0) {
-        layerPolygons.push(multiPoly);
-        layerBBoxes.push(getBoundingBox(multiPoly));
-        const fillPath = Object.assign(Object.create(Object.getPrototypeOf(path)), path);
-        fillPath.color = new THREE.Color().setStyle(fillColor);
-        newSvgDataPaths.push(fillPath);
+    // Seam-seal strokes use stroke===fill. Merge them into one mesh so deleting
+    // a color never leaves an orphan thin border / fragment strip behind.
+    const seamStrokeMatchesFill = hasStroke && hasFill && colorsMatch(strokeColor, fillColor);
+
+    if (seamStrokeMatchesFill) {
+      let merged = fillMultiPoly;
+      if (strokeMultiPoly.length > 0 && fillMultiPoly.length > 0) {
+        try {
+          merged = performClipperBoolean(fillMultiPoly, [strokeMultiPoly], ClipperLib.ClipType.ctUnion);
+        } catch {
+          merged = fillMultiPoly;
+        }
+      } else if (strokeMultiPoly.length > 0) {
+        merged = strokeMultiPoly;
       }
+      pushLayer(layerPolygons, layerBBoxes, newSvgDataPaths, path, merged, fillColor!);
+      continue;
+    }
+
+    // Distinct stroke color (true outlines) stays its own layer.
+    if (hasStroke && strokeMultiPoly.length > 0) {
+      pushLayer(layerPolygons, layerBBoxes, newSvgDataPaths, path, strokeMultiPoly, strokeColor!);
+    }
+    if (hasFill && fillMultiPoly.length > 0) {
+      pushLayer(layerPolygons, layerBBoxes, newSvgDataPaths, path, fillMultiPoly, fillColor!);
     }
   }
 
