@@ -33,9 +33,13 @@ const TINY_AREA = 80;
 const TINY_SPAN = 4;
 const SEAM_STROKE_WIDTH = 0.7;
 /** Max distance-to-chord to drop an intermediate L vertex (SVG units). */
-const COLLINEAR_EPSILON = 0.55;
+const COLLINEAR_EPSILON = 0.35;
 /** Snap near-horizontal / near-vertical L jitter within this tolerance. */
 const AXIS_SNAP = 0.45;
+/** Max deviation from 180° (degrees) to treat a corner as "almost flat". */
+const FLAT_TURN_DEG = 9;
+/** If this many consecutive similar small turns exist, treat the run as a curve. */
+const CURVED_RUN_MIN_TURNS = 5;
 
 type PathCmd = { cmd: string; args: number[] };
 
@@ -104,9 +108,59 @@ function snapAxisAligned(points: Array<[number, number]>): Array<[number, number
   return out;
 }
 
-/** Douglas-Peucker-lite on an open polyline of L vertices. */
+/** Exterior turn angle in degrees (0 = straight ahead, 180 = reverse). */
+function turnDeviationDeg(
+  ax: number, ay: number,
+  bx: number, by: number,
+  cx: number, cy: number,
+): number {
+  const abx = bx - ax;
+  const aby = by - ay;
+  const bcx = cx - bx;
+  const bcy = cy - by;
+  const len1 = Math.hypot(abx, aby);
+  const len2 = Math.hypot(bcx, bcy);
+  if (len1 < 1e-6 || len2 < 1e-6) return 0;
+  const dot = (abx * bcx + aby * bcy) / (len1 * len2);
+  const clamped = Math.max(-1, Math.min(1, dot));
+  // Angle between segments; 0° = collinear same direction.
+  return (Math.acos(clamped) * 180) / Math.PI;
+}
+
+/**
+ * Circles/arcs from ImageTracer are often dense L polylines with many similar
+ * small turns. Detect that and skip simplify so we don't facet them into octagons.
+ */
+function looksLikeCurvedRun(points: Array<[number, number]>): boolean {
+  if (points.length < CURVED_RUN_MIN_TURNS + 2) return false;
+
+  const turns: number[] = [];
+  for (let i = 1; i < points.length - 1; i++) {
+    const a = points[i - 1];
+    const b = points[i];
+    const c = points[i + 1];
+    turns.push(turnDeviationDeg(a[0], a[1], b[0], b[1], c[0], c[1]));
+  }
+
+  // Count mild, consistent turns (not flat, not sharp corners).
+  const mild = turns.filter(t => t > FLAT_TURN_DEG && t < 55);
+  if (mild.length < CURVED_RUN_MIN_TURNS) return false;
+
+  const mean = mild.reduce((s, t) => s + t, 0) / mild.length;
+  let variance = 0;
+  for (const t of mild) variance += (t - mean) * (t - mean);
+  variance /= mild.length;
+  // Similar turn sizes → arc/circle; high variance → mixed stairs/corners.
+  return Math.sqrt(variance) < 12 && mean > FLAT_TURN_DEG;
+}
+
+/**
+ * Douglas-Peucker-lite that only collapses nearly-flat corners.
+ * Mid-vertices with meaningful turn angles are kept so circles stay round.
+ */
 function simplifyCollinear(points: Array<[number, number]>, epsilon: number): Array<[number, number]> {
   if (points.length <= 2) return points;
+  if (looksLikeCurvedRun(points)) return points;
 
   const simplify = (pts: Array<[number, number]>): Array<[number, number]> => {
     if (pts.length <= 2) return pts;
@@ -115,17 +169,39 @@ function simplifyCollinear(points: Array<[number, number]>, epsilon: number): Ar
     const end = pts.length - 1;
     for (let i = 1; i < end; i++) {
       const dist = distToChord(pts[i][0], pts[i][1], pts[0][0], pts[0][1], pts[end][0], pts[end][1]);
+      const turn = turnDeviationDeg(
+        pts[i - 1][0], pts[i - 1][1],
+        pts[i][0], pts[i][1],
+        pts[i + 1][0], pts[i + 1][1],
+      );
+      // Only consider dropping vertices that are both close to the chord and flat.
+      if (turn > FLAT_TURN_DEG) continue;
       if (dist > maxDist) {
         maxDist = dist;
         index = i;
       }
     }
-    if (maxDist > epsilon) {
+    if (maxDist > epsilon && index > 0) {
       const left = simplify(pts.slice(0, index + 1));
       const right = simplify(pts.slice(index));
       return [...left.slice(0, -1), ...right];
     }
-    return [pts[0], pts[end]];
+    // If nothing is flat enough to drop via DP, still strip only flat midpoints.
+    if (maxDist <= epsilon) {
+      const kept: Array<[number, number]> = [pts[0]];
+      for (let i = 1; i < pts.length - 1; i++) {
+        const turn = turnDeviationDeg(
+          pts[i - 1][0], pts[i - 1][1],
+          pts[i][0], pts[i][1],
+          pts[i + 1][0], pts[i + 1][1],
+        );
+        const dist = distToChord(pts[i][0], pts[i][1], pts[0][0], pts[0][1], pts[end][0], pts[end][1]);
+        if (turn > FLAT_TURN_DEG || dist > epsilon) kept.push(pts[i]);
+      }
+      kept.push(pts[end]);
+      return kept;
+    }
+    return pts;
   };
 
   return simplify(points);
@@ -263,8 +339,10 @@ export function simplifyStraightRunsInPathD(d: string): string {
         points = [[x, y], ...absPoints];
       }
 
-      const snapped = snapAxisAligned(points);
-      const simplified = simplifyCollinear(snapped, COLLINEAR_EPSILON);
+      // Leave circular / arcing polylines alone — axis-snap + DP facets them.
+      const simplified = looksLikeCurvedRun(points)
+        ? points
+        : simplifyCollinear(snapAxisAligned(points), COLLINEAR_EPSILON);
 
       if (startedWithMove) {
         const [mx, my] = simplified[0];
@@ -368,6 +446,19 @@ function isTiny(path: PathInfo): boolean {
   return path.area < TINY_AREA || span < TINY_SPAN;
 }
 
+/** Compact blob (near-square bbox) — likely an intentional spot, not AA shrapnel. */
+function isCompactDetail(path: PathInfo): boolean {
+  const w = Math.max(0.001, path.maxX - path.minX);
+  const h = Math.max(0.001, path.maxY - path.minY);
+  const aspect = Math.max(w, h) / Math.min(w, h);
+  return aspect <= 1.8 && path.area >= 6 && path.area <= 400;
+}
+
+function fillDistance(a: Rgb | null, b: Rgb | null): number {
+  if (!a || !b) return 999;
+  return Math.abs(a.r - b.r) + Math.abs(a.g - b.g) + Math.abs(a.b - b.b);
+}
+
 function setOrReplaceAttr(tag: string, name: string, value: string): string {
   const re = new RegExp(`\\s${name}\\s*=\\s*["'][^"']*["']`, 'i');
   if (re.test(tag)) {
@@ -428,13 +519,28 @@ function absorbTinyFills(paths: PathInfo[]): Map<number, string> {
   const large = paths.filter(p => !isTiny(p));
   if (large.length === 0) return fillOverrides;
 
+  // Colors that appear on several compact blobs are intentional motifs (feather spots).
+  const compactColorCounts = new Map<string, number>();
+  for (const path of paths) {
+    if (!isCompactDetail(path) || !path.rgb) continue;
+    const key = `${path.rgb.r},${path.rgb.g},${path.rgb.b}`;
+    compactColorCounts.set(key, (compactColorCounts.get(key) ?? 0) + 1);
+  }
+
   for (const tiny of paths) {
     if (!isTiny(tiny)) continue;
+    // Never absorb compact repeated spots into their feather color.
+    if (tiny.rgb && isCompactDetail(tiny)) {
+      const key = `${tiny.rgb.r},${tiny.rgb.g},${tiny.rgb.b}`;
+      if ((compactColorCounts.get(key) ?? 0) >= 2) continue;
+    }
 
     let best: PathInfo | null = null;
     let bestScore = Number.POSITIVE_INFINITY;
     for (const neighbor of large) {
       if (!boxesNear(tiny, neighbor, 4)) continue;
+      // Only absorb AA crumbs that nearly match a neighbor — distinct spot colors stay.
+      if (fillDistance(tiny.rgb, neighbor.rgb) > 48) continue;
       const dist = Math.hypot(tiny.cx - neighbor.cx, tiny.cy - neighbor.cy);
       const score = dist - Math.sqrt(neighbor.area) * 0.01;
       if (score < bestScore) {

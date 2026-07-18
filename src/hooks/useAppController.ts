@@ -536,9 +536,9 @@ export function useAppController() {
           mincolorratio: 0.002,
           strokewidth: 0,
           viewbox: true,
-          pathomit: 14,
-          ltres: 2.5,
-          qtres: 1.0,
+          pathomit: 6,
+          ltres: 2.0,
+          qtres: 0.35,
           rightangleenhance: true,
           roundcoords: 1,
           blurradius: 0,
@@ -608,7 +608,7 @@ export function useAppController() {
               setTimeout(() => {
                 try {
                   const { dataUrl, suggestedColorCount, palette, backgroundColor } = preprocessCanvas(canvas, {
-                    maxContentColors: 16,
+                    maxContentColors: 28,
                   });
                   setColorCount(suggestedColorCount);
                   lastPaletteRef.current = palette;

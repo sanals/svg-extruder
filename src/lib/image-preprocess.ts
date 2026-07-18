@@ -27,11 +27,11 @@ interface Lab {
 
 const MIN_COLOR_COUNT = 2;
 const MAX_COLOR_COUNT = 64;
-/** Default cap — enough for multi-tone flat icons (AI logo ~12–16 colors). */
-const DEFAULT_MAX_CONTENT_COLORS = 16;
+/** Default cap — headroom for complex flat art (Chat-Large ~20–28 colors). */
+const DEFAULT_MAX_CONTENT_COLORS = 28;
 const MEDIAN_CUT_TARGET = 32;
 /** Only merge very close fringe colors; intentional two-tones (two greens/pinks) stay. */
-const MERGE_DELTA_E = 14;
+const MERGE_DELTA_E = 9;
 const BACKGROUND_SEED_TOLERANCE = 18;
 const MAX_SAMPLE_PIXELS = 20000;
 const WHITE: Rgb = { r: 255, g: 255, b: 255 };
@@ -402,18 +402,47 @@ function buildPalette(
   const frequencies = countColorFrequencies(sampled, palette);
   palette = collapsePalette(palette, frequencies, maxContentColors, MERGE_DELTA_E);
 
-  // Preserve pure white when content has near-white pixels (letters, bin slits, pin icon).
-  const hasNearWhite = sampled.some(c => rgbDistance(c, WHITE) <= 40);
+  // Preserve eye sclera whites and soft grey crescents — these are often
+  // sparse samples that collapse into pink under median-cut.
+  const isNearWhiteSample = (c: Rgb) =>
+    rgbDistance(c, WHITE) <= 55 ||
+    (getLuminance(c) >= 220 && Math.max(c.r, c.g, c.b) - Math.min(c.r, c.g, c.b) <= 35);
+  const isSoftGreySample = (c: Rgb) => {
+    const lum = getLuminance(c);
+    const chroma = Math.max(c.r, c.g, c.b) - Math.min(c.r, c.g, c.b);
+    return lum >= 160 && lum < 220 && chroma <= 28;
+  };
+
+  const hasNearWhite = sampled.some(isNearWhiteSample);
+  const hasSoftGrey = sampled.some(isSoftGreySample);
   if (hasNearWhite) {
     if (!palette.some(c => rgbDistance(c, WHITE) <= 30)) {
       palette = [...palette, WHITE];
     }
-    // If over budget after forcing white, drop the least-used non-white/non-bg color.
+    const nearWhites = palette
+      .map((c, i) => ({ c, i, dist: rgbDistance(c, WHITE) }))
+      .filter(e => e.dist <= 30 || isNearWhiteSample(e.c))
+      .sort((a, b) => a.dist - b.dist);
+    if (nearWhites.length > 0) {
+      palette[nearWhites[0].i] = WHITE;
+    }
+  }
+  if (hasSoftGrey) {
+    const greySamples = sampled.filter(isSoftGreySample);
+    const greyAvg = averageColors(greySamples);
+    if (!palette.some(c => deltaE76(c, greyAvg) < 10 && isSoftGreySample(c))) {
+      palette = ensureDistinctColor(palette, greyAvg, 10);
+    }
+  }
+  if (hasNearWhite || hasSoftGrey) {
     if (palette.length > maxContentColors) {
       const freqs = countColorFrequencies(sampled, palette);
       const ranked = palette
         .map((c, i) => ({ c, i, n: freqs[i] ?? 0 }))
-        .filter(e => rgbDistance(e.c, WHITE) > 30 && deltaE76(e.c, background) >= 8)
+        .filter(e =>
+          rgbDistance(e.c, WHITE) > 30 &&
+          !isSoftGreySample(e.c) &&
+          deltaE76(e.c, background) >= 8)
         .sort((a, b) => a.n - b.n);
       const dropIndexes = new Set<number>();
       for (const entry of ranked) {
@@ -494,6 +523,37 @@ function dominantNeighborKey(
   return bestKey;
 }
 
+/** Largest 4-connected component size in a binary mask. */
+function largestComponentSize(mask: Uint8Array, width: number, height: number): number {
+  const total = width * height;
+  const visited = new Uint8Array(total);
+  const queue: number[] = [];
+  let largest = 0;
+
+  for (let i = 0; i < total; i++) {
+    if (!mask[i] || visited[i]) continue;
+    let head = 0;
+    queue.length = 0;
+    queue.push(i);
+    visited[i] = 1;
+    while (head < queue.length) {
+      const cur = queue[head++];
+      const x = cur % width;
+      const y = Math.floor(cur / width);
+      const neigh = [[x - 1, y], [x + 1, y], [x, y - 1], [x, y + 1]];
+      for (const [nx, ny] of neigh) {
+        if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
+        const ni = ny * width + nx;
+        if (!mask[ni] || visited[ni]) continue;
+        visited[ni] = 1;
+        queue.push(ni);
+      }
+    }
+    largest = Math.max(largest, queue.length);
+  }
+  return largest;
+}
+
 /**
  * Morphological opening on each dark/non-background indexed color.
  * Erode->dilate removes thin stair-step spikes and detached crumbs at boundaries.
@@ -520,12 +580,23 @@ function morphologicalOpenIndexed(
 
   for (const key of keys) {
     const mask = new Uint8Array(totalPixels);
+    let colorPixels = 0;
     for (let i = 0; i < totalPixels; i++) {
       if (bgMask[i]) continue;
       const idx = i * 4;
       if (data[idx + 3] < 128) continue;
       const pixelKey = rgbKey(data[idx], data[idx + 1], data[idx + 2]);
-      if (pixelKey === key) mask[i] = 1;
+      if (pixelKey === key) {
+        mask[i] = 1;
+        colorPixels += 1;
+      }
+    }
+
+    // Skip opening for detail colors (feather spots, eye crescents): opening
+    // deletes compact blobs that never survive erode→dilate.
+    const maxComponent = largestComponentSize(mask, width, height);
+    if (maxComponent > 0 && maxComponent < 180 && colorPixels < totalPixels * 0.04) {
+      continue;
     }
 
     const eroded = new Uint8Array(totalPixels);
@@ -709,8 +780,8 @@ function despeckleIndexed(
         const selfG = source[idx + 1];
         const selfB = source[idx + 2];
         const selfLum = 0.299 * selfR + 0.587 * selfG + 0.114 * selfB;
-        // Thin white/light strokes are intentional — do not majority-vote them away.
-        if (selfLum >= 200) continue;
+        // Thin white/light strokes and soft eye-shadow greys — do not majority-vote them away.
+        if (selfLum >= 175) continue;
 
         const selfKey = rgbKey(selfR, selfG, selfB);
         const counts = new Map<number, number>();
@@ -826,7 +897,7 @@ function dissolveFringeColors(
   const fringeKeys = new Set<number>();
   for (const [key, entry] of stats) {
     const lum = 0.299 * entry.color.r + 0.587 * entry.color.g + 0.114 * entry.color.b;
-    if (lum >= 200) continue; // never dissolve white/light ink
+    if (lum >= 175) continue; // never dissolve white/light ink or soft grey eye shadows
 
     const edgeRatio = entry.edgeCount / entry.count;
     const areaRatio = entry.count / contentPixels;
