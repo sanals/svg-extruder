@@ -5,6 +5,7 @@ import { type SvgModelRef } from '../components/SvgModel';
 import { useHistory } from './useHistory';
 import { exportToSTL } from '../lib/export-utils';
 import { computeAutoExtrudeDepths, calculateLineArtParams, generateSVGFromShapes } from '../lib/app-logic';
+import { preprocessCanvas, stripTinyShardPaths, type PaletteColor } from '../lib/image-preprocess';
 
 export function useAppController() {
   const [svgUrl, setSvgUrl] = useState<string | null>(null);
@@ -76,6 +77,10 @@ export function useAppController() {
 
   const colorChangeTimeout = useRef<number | null>(null);
   const traceIdRef = useRef<number>(0);
+  const lastPaletteRef = useRef<PaletteColor[] | undefined>(undefined);
+  const lastBackgroundRef = useRef<PaletteColor | null>(null);
+  /** Raw resized image before palette collapse — used when the color slider changes. */
+  const sourceImageDataUrlRef = useRef<string | null>(null);
 
   const currentMeshColors = meshColors.map(m => ({
     id: m.id,
@@ -487,19 +492,31 @@ export function useAppController() {
     } catch (e) { alert("Failed to create border."); } finally { setIsBordering(false); setBorderStatus(null); }
   };
 
-  const traceImage = (dataUrl: string, colors: number) => {
+  const traceImage = (
+    dataUrl: string,
+    colors: number,
+    palette?: PaletteColor[],
+    backgroundColor?: PaletteColor | null,
+  ) => {
+    if (palette) lastPaletteRef.current = palette;
+    if (backgroundColor !== undefined) lastBackgroundRef.current = backgroundColor;
+    const activePalette = palette ?? lastPaletteRef.current;
+
     const currentTraceId = ++traceIdRef.current;
-    setIsTracing("Step 2/3: Vectorizing Pixels to SVG...");
+    setIsTracing("Step 3/4: Vectorizing Pixels to SVG...");
     setTimeout(() => {
       ImageTracer.imageToSVG(
         dataUrl,
         (svgStr: string) => {
           if (currentTraceId !== traceIdRef.current) return;
-          const blob = new Blob([svgStr], { type: 'image/svg+xml' });
+          // Keep the outer/background color — it is part of the artwork
+          // (e.g. light frame on compleximage, gray surround on icons).
+          const cleanedSvg = stripTinyShardPaths(svgStr);
+          const blob = new Blob([cleanedSvg], { type: 'image/svg+xml' });
           const svgBlobUrl = URL.createObjectURL(blob);
 
-          setIsTracing("Step 3/3: Parsing 2D Geometry...");
-          setRawSvgContent(svgStr);
+          setIsTracing("Step 4/4: Parsing 2D Geometry...");
+          setRawSvgContent(cleanedSvg);
           setSvgUrl(svgBlobUrl);
           setSelectedMeshIds([]);
           setMeshDepths({});
@@ -511,13 +528,20 @@ export function useAppController() {
           setImageDataUrl(dataUrl);
         },
         {
-          numberofcolors: colors,
-          colorquantcycles: 15,
-          mincolorratio: 0,
+          colorsampling: activePalette ? 0 : 2,
+          pal: activePalette,
+          numberofcolors: activePalette?.length ?? colors,
+          colorquantcycles: activePalette ? 1 : 3,
+          mincolorratio: 0.002,
           strokewidth: 0,
           viewbox: true,
-          blurradius: 2,
-          blurdelta: 20
+          pathomit: 14,
+          ltres: 1,
+          qtres: 1,
+          roundcoords: 1,
+          blurradius: 0,
+          blurdelta: 20,
+          linefilter: true,
         }
       );
     }, 50);
@@ -549,18 +573,19 @@ export function useAppController() {
         reader.readAsText(file);
       } else if (file.type === 'image/png' || file.type === 'image/jpeg' || file.type === 'image/webp') {
         const url = URL.createObjectURL(file);
-        setIsTracing("Step 1/3: Loading Image...");
+        setIsTracing("Step 1/4: Loading Image...");
         setSvgUrl(null);
 
         const img = new Image();
         img.onload = () => {
-          setIsTracing("Step 1/3: Optimizing Image Resolution...");
+          setIsTracing("Step 1/4: Optimizing Image Resolution...");
           setTimeout(() => {
             let width = img.width;
             let height = img.height;
-            const maxDim = 400;
+            const maxDim = 1200;
+            const wasDownscaled = width > maxDim || height > maxDim;
 
-            if (width > maxDim || height > maxDim) {
+            if (wasDownscaled) {
               const ratio = Math.min(maxDim / width, maxDim / height);
               width = Math.round(width * ratio);
               height = Math.round(height * ratio);
@@ -571,9 +596,27 @@ export function useAppController() {
             canvas.height = height;
             const ctx = canvas.getContext("2d");
             if (ctx) {
+              // Smooth when downscaling so curves stay clean; nearest-neighbor makes stair-steps.
+              ctx.imageSmoothingEnabled = wasDownscaled;
+              ctx.imageSmoothingQuality = 'high';
               ctx.drawImage(img, 0, 0, width, height);
-              const dataUrl = canvas.toDataURL("image/png");
-              traceImage(dataUrl, colorCount);
+              const sourceDataUrl = canvas.toDataURL('image/png');
+              sourceImageDataUrlRef.current = sourceDataUrl;
+              setIsTracing("Step 2/4: Cleaning edges & detecting palette...");
+              setTimeout(() => {
+                try {
+                  const { dataUrl, suggestedColorCount, palette, backgroundColor } = preprocessCanvas(canvas, {
+                    maxContentColors: 16,
+                  });
+                  setColorCount(suggestedColorCount);
+                  lastPaletteRef.current = palette;
+                  lastBackgroundRef.current = backgroundColor;
+                  traceImage(dataUrl, suggestedColorCount, palette, backgroundColor);
+                } catch {
+                  const dataUrl = canvas.toDataURL("image/png");
+                  traceImage(dataUrl, colorCount);
+                }
+              }, 50);
             }
           }, 50);
         };
@@ -633,9 +676,33 @@ export function useAppController() {
     }
 
     colorChangeTimeout.current = window.setTimeout(() => {
-      if (imageDataUrl) {
-        traceImage(imageDataUrl, newColors);
+      const sourceUrl = sourceImageDataUrlRef.current;
+      if (!sourceUrl) {
+        if (imageDataUrl) traceImage(imageDataUrl, newColors);
+        return;
       }
+
+      setIsTracing("Step 2/4: Rebuilding palette...");
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = img.width;
+        canvas.height = img.height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return;
+        ctx.drawImage(img, 0, 0);
+        try {
+          const { dataUrl, palette, backgroundColor } = preprocessCanvas(canvas, {
+            maxContentColors: newColors,
+          });
+          lastPaletteRef.current = palette;
+          lastBackgroundRef.current = backgroundColor;
+          traceImage(dataUrl, newColors, palette, backgroundColor);
+        } catch {
+          traceImage(sourceUrl, newColors);
+        }
+      };
+      img.src = sourceUrl;
     }, 400);
   };
 
