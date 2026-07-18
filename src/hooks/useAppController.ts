@@ -1,12 +1,12 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import * as THREE from 'three';
-import ImageTracer from 'imagetracerjs';
 import { type SvgModelRef } from '../components/SvgModel';
 import { useHistory } from './useHistory';
 import { exportToSTL } from '../lib/export-utils';
 import { computeAutoExtrudeDepths, calculateLineArtParams, generateSVGFromShapes } from '../lib/app-logic';
 import { preprocessCanvas, type PaletteColor } from '../lib/image-preprocess';
 import { sealAndStraightenSvg } from '../lib/svg-path-cleanup';
+import { dataUrlToVtracerSvg } from '../lib/vtracer-trace';
 
 export function useAppController() {
   const [svgUrl, setSvgUrl] = useState<string | null>(null);
@@ -501,51 +501,40 @@ export function useAppController() {
   ) => {
     if (palette) lastPaletteRef.current = palette;
     if (backgroundColor !== undefined) lastBackgroundRef.current = backgroundColor;
-    const activePalette = palette ?? lastPaletteRef.current;
 
     const currentTraceId = ++traceIdRef.current;
     setIsTracing("Step 3/4: Vectorizing Pixels to SVG...");
-    setTimeout(() => {
-      ImageTracer.imageToSVG(
-        dataUrl,
-        (svgStr: string) => {
-          if (currentTraceId !== traceIdRef.current) return;
-          // Keep outer/background fills. Seal empty voids between abutting
-          // colors and straighten stair-step edges (do not delete crumbs into holes).
-          const cleanedSvg = sealAndStraightenSvg(svgStr);
-          const blob = new Blob([cleanedSvg], { type: 'image/svg+xml' });
-          const svgBlobUrl = URL.createObjectURL(blob);
+    setTimeout(async () => {
+      try {
+        // VTracer (spline) — same class of boundary+curve fitting as pngtosvg.
+        // Preprocess already posterized the bitmap; VTracer traces smooth paths.
+        const colorHint = palette?.length ?? colors;
+        const svgStr = await dataUrlToVtracerSvg(dataUrl, { colorCount: colorHint });
+        if (currentTraceId !== traceIdRef.current) return;
 
-          setIsTracing("Step 4/4: Parsing 2D Geometry...");
-          setRawSvgContent(cleanedSvg);
-          setSvgUrl(svgBlobUrl);
-          setSelectedMeshIds([]);
-          setMeshDepths({});
-          setVertexCount(0);
-          clearHistory();
-          setMeshColors([]);
-          setMeshColorOverrides({});
-          setIsMerging(false);
-          setImageDataUrl(dataUrl);
-        },
-        {
-          colorsampling: activePalette ? 0 : 2,
-          pal: activePalette,
-          numberofcolors: activePalette?.length ?? colors,
-          colorquantcycles: activePalette ? 1 : 3,
-          mincolorratio: 0.002,
-          strokewidth: 0,
-          viewbox: true,
-          pathomit: 6,
-          ltres: 2.0,
-          qtres: 0.35,
-          rightangleenhance: true,
-          roundcoords: 1,
-          blurradius: 0,
-          blurdelta: 20,
-          linefilter: true,
-        }
-      );
+        // Keep outer/background fills. Seal empty voids between abutting
+        // colors (do not delete crumbs into holes; no aggressive Q rewrite).
+        const cleanedSvg = sealAndStraightenSvg(svgStr);
+        const blob = new Blob([cleanedSvg], { type: 'image/svg+xml' });
+        const svgBlobUrl = URL.createObjectURL(blob);
+
+        setIsTracing("Step 4/4: Parsing 2D Geometry...");
+        setRawSvgContent(cleanedSvg);
+        setSvgUrl(svgBlobUrl);
+        setSelectedMeshIds([]);
+        setMeshDepths({});
+        setVertexCount(0);
+        clearHistory();
+        setMeshColors([]);
+        setMeshColorOverrides({});
+        setIsMerging(false);
+        setImageDataUrl(dataUrl);
+      } catch (err) {
+        if (currentTraceId !== traceIdRef.current) return;
+        console.error('VTracer vectorization failed', err);
+        setIsTracing(null);
+        alert('Vectorization failed. Please try another image or color count.');
+      }
     }, 50);
   };
 
