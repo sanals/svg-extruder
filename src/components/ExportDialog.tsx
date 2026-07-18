@@ -48,8 +48,12 @@ export const ExportDialog: React.FC<ExportDialogProps> = ({
   return (
     <div className="export-popup-overlay" style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.5)', zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', backdropFilter: 'blur(3px)' }} onClick={(e) => { if (e.target === e.currentTarget) setShowExportOptions(false); }}>
       <div className="card" onClick={(e) => e.stopPropagation()} style={{ width: '400px', maxWidth: '90vw', maxHeight: '90vh', overflowY: 'auto', position: 'relative', boxShadow: '0 10px 25px rgba(0,0,0,0.5)', border: '1px solid #475569', padding: '1rem', backgroundColor: '#1e293b' }}>
-        <button style={{ position: 'absolute', top: '10px', right: '10px', background: 'none', border: 'none', color: '#94a3b8', cursor: 'pointer', fontSize: '1.2rem', padding: '4px' }} onClick={() => setShowExportOptions(false)}>✕</button>
-        <div className="card-header" style={{ marginBottom: '1rem', display: 'flex', alignItems: 'center' }}><Download size={14} style={{ marginRight: '6px' }} /> EXPORT OPTIONS</div>
+        <div className="card-header" style={{ marginBottom: '1rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div style={{ display: 'flex', alignItems: 'center' }}>
+            <Download size={14} style={{ marginRight: '6px' }} /> EXPORT OPTIONS
+          </div>
+          <button style={{ background: 'none', border: 'none', color: '#94a3b8', cursor: 'pointer', fontSize: '1.2rem', padding: '4px', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '-4px -4px -4px 0' }} onClick={() => setShowExportOptions(false)}>✕</button>
+        </div>
         <div className="card-body">
           <div style={{ display: 'flex', gap: '0.75rem', marginBottom: '1rem' }}>
             <div style={{ flex: 1 }}>
@@ -62,16 +66,16 @@ export const ExportDialog: React.FC<ExportDialogProps> = ({
             <div style={{ flex: 1 }}>
               <label className="checkbox-label" style={{ fontSize: '0.75rem', marginBottom: '0.35rem', color: '#94a3b8' }}>Export Layout</label>
               <select className="custom-select" value={gridSize} onChange={(e) => setGridSize(e.target.value)}>
-                <option value="auto">Auto (Max 2x2)</option>
-                <option value="1x1">1x1 Plate</option>
-                <option value="2x2">2x2 Plates</option>
-                <option value="1x2">1x2 (Vertical)</option>
-                <option value="2x1">2x1 (Horizontal)</option>
+                <option value="auto">Actual Size (Auto-split)</option>
+                <option value="1x1">Fill 1x1 Plate</option>
+                <option value="2x2">Fill 2x2 Plates</option>
+                <option value="1x2">Fill 1x2 (Vertical)</option>
+                <option value="2x1">Fill 2x1 (Horizontal)</option>
               </select>
             </div>
           </div>
 
-          <div style={{ marginBottom: '1rem' }}>
+          <div style={{ marginBottom: '1rem', opacity: gridSize === 'auto' ? 1 : 0.4, pointerEvents: gridSize === 'auto' ? 'auto' : 'none' }}>
             <label className="checkbox-label" style={{ fontSize: '0.75rem', marginBottom: '0.25rem', color: '#94a3b8' }}>Scale Multiplier (%)</label>
             <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
               <div style={{ flex: 1 }}>
@@ -79,6 +83,9 @@ export const ExportDialog: React.FC<ExportDialogProps> = ({
               </div>
               <span style={{ fontSize: '0.75rem', width: '40px', color: 'white', textAlign: 'right' }}>{customScale}%</span>
             </div>
+            {gridSize !== 'auto' && (
+              <div style={{ fontSize: '0.65rem', color: '#fbbf24', marginTop: '0.25rem' }}>Scale Multiplier is only used when "Actual Size" is selected.</div>
+            )}
           </div>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginBottom: '1rem' }}>

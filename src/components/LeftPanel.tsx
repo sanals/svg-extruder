@@ -70,6 +70,7 @@ export const LeftPanel: React.FC<LeftPanelProps> = (props) => {
                 transition: 'background-color 0.2s'
               }} onMouseOver={(e) => e.currentTarget.style.backgroundColor = '#2563eb'} onMouseOut={(e) => e.currentTarget.style.backgroundColor = '#3b82f6'}>
                 <Upload size={16} /> Image
+                <span style={{ fontSize: '0.6rem', backgroundColor: '#fbbf24', color: '#78350f', padding: '1px 4px', borderRadius: '4px', fontWeight: 'bold', marginLeft: '2px' }}>Beta</span>
               </div>
               <input id="image-upload" type="file" accept=".png, .jpg, .jpeg, .webp" onChange={handleFileUpload} style={{ display: 'none' }} />
             </label>
