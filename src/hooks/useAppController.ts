@@ -660,9 +660,13 @@ export function useAppController() {
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Delete' || e.key === 'Backspace') {
-        const activeElement = document.activeElement;
-        const isInput = activeElement?.tagName === 'INPUT' || activeElement?.tagName === 'TEXTAREA' || activeElement?.tagName === 'SELECT';
-        if (!isInput && selectedMeshIds.length > 0) {
+        const activeElement = document.activeElement as HTMLElement;
+        const isTextInput = 
+          activeElement?.tagName === 'TEXTAREA' || 
+          (activeElement?.tagName === 'INPUT' && !['radio', 'checkbox', 'color', 'range', 'button', 'file'].includes((activeElement as HTMLInputElement).type)) || 
+          activeElement?.tagName === 'SELECT';
+        
+        if (!isTextInput && selectedMeshIds.length > 0) {
           handleDeleteSelected();
         }
       }

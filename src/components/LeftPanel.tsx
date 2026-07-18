@@ -184,13 +184,13 @@ export const LeftPanel: React.FC<LeftPanelProps> = (props) => {
           <div className="card-body">
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
               <label className="checkbox-label" style={{ fontSize: '0.75rem', fontWeight: 'bold', margin: 0, gap: '6px' }}>
-                <input 
-                  type="checkbox" 
-                  checked={uniqueColors.length > 0 && uniqueColors.every(c => currentMeshColors.filter(m => m.colorHex === c).every(m => selectedMeshIds.includes(m.id)))} 
+                <input
+                  type="checkbox"
+                  checked={uniqueColors.length > 0 && uniqueColors.every(c => currentMeshColors.filter(m => m.colorHex === c).every(m => selectedMeshIds.includes(m.id)))}
                   onChange={(e) => {
                     if (e.target.checked) setSelectedMeshIds(currentMeshColors.map(m => m.id));
                     else setSelectedMeshIds([]);
-                  }} 
+                  }}
                 />
                 Select All Colors
               </label>
@@ -242,7 +242,7 @@ export const LeftPanel: React.FC<LeftPanelProps> = (props) => {
                 );
               })}
             </div>
-            
+
             <div style={{ display: 'flex', gap: '0.5rem', marginTop: '1rem' }}>
               <button
                 onClick={initiateFuse}

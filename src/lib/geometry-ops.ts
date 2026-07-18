@@ -735,16 +735,19 @@ export async function generateUniformLineArt(
   const scale = 10000;
   const widthScaled = (widthAmount / 2) * scale;
 
-  const getPaths = (tree: any) => {
+  // Collect all paths from a PolyTree (outers + holes with their native winding)
+  const getPaths = (tree: any): any[] => {
     const paths: any[] = [];
-    const getPolys = (node: any) => {
-       paths.push(node.Contour());
-       node.Childs().forEach(getPolys);
+    const collect = (node: any) => {
+       const contour = node.Contour();
+       if (contour.length > 0) paths.push(contour);
+       node.Childs().forEach(collect);
     };
-    tree.Childs().forEach(getPolys);
+    tree.Childs().forEach(collect);
     return paths;
   };
 
+  // --- Step 1: Expand each light shape outward ---
   const expandedLightShapes: any[][][] = [];
 
   shapesWithColors.forEach(item => {
@@ -772,6 +775,7 @@ export async function generateUniformLineArt(
     });
   });
 
+  // --- Step 2: Find overlaps between expanded light shapes (= color separation borders) ---
   const processShapes = (shapes: any[][][]): { union: any[], overlaps: any[] } => {
       if (shapes.length === 0) return { union: [], overlaps: [] };
       if (shapes.length === 1) return { union: shapes[0], overlaps: [] };
@@ -823,19 +827,53 @@ export async function generateUniformLineArt(
   };
 
   const result = processShapes(expandedLightShapes);
-  
-  const finalClipper = new ClipperLib.Clipper();
+
+  // --- Step 3: Subtract existing dark shapes to avoid double-bordering ---
+  // Collect all dark shape paths as clip geometry
+  const darkPaths: any[] = [];
+  shapesWithColors.forEach(item => {
+    if (!darkShapeIds.includes(item.id)) return;
+    item.shapes.forEach(shape => {
+      const polygon = shapeToPolygon(shape);
+      for (let i = 0; i < polygon.length; i++) {
+        const ring = polygon[i];
+        if (ring.length < 3) continue;
+        const clipperPath = ring.map(p => ({ X: Math.round(p[0] * scale), Y: Math.round(p[1] * scale) }));
+        const isOuter = (i === 0);
+        if (isOuter !== ClipperLib.Clipper.Orientation(clipperPath)) clipperPath.reverse();
+        darkPaths.push(clipperPath);
+      }
+    });
+  });
+
+  let finalTree = new ClipperLib.PolyTree();
+
   if (result.overlaps.length > 0) {
-    finalClipper.AddPaths(result.overlaps, ClipperLib.PolyType.ptSubject, true);
+    // First union all overlaps
+    const overlapClipper = new ClipperLib.Clipper();
+    overlapClipper.AddPaths(result.overlaps, ClipperLib.PolyType.ptSubject, true);
+
+    if (darkPaths.length > 0) {
+      // Subtract dark shapes from the generated borders
+      overlapClipper.AddPaths(darkPaths, ClipperLib.PolyType.ptClip, true);
+      overlapClipper.Execute(ClipperLib.ClipType.ctDifference, finalTree, ClipperLib.PolyFillType.pftNonZero, ClipperLib.PolyFillType.pftNonZero);
+    } else {
+      overlapClipper.Execute(ClipperLib.ClipType.ctUnion, finalTree, ClipperLib.PolyFillType.pftNonZero, ClipperLib.PolyFillType.pftNonZero);
+    }
   }
-  const finalTree = new ClipperLib.PolyTree();
-  if (result.overlaps.length > 0) {
-    finalClipper.Execute(ClipperLib.ClipType.ctUnion, finalTree, ClipperLib.PolyFillType.pftNonZero, ClipperLib.PolyFillType.pftNonZero);
-  }
+
+  // --- Step 4: Convert to shapes, filtering out tiny artifacts ---
+  // Minimum area threshold: scale^2 means 1 square real-pixel.
+  // Use 50 sq pixels as minimum to remove point-like artifacts at junctions.
+  const minAreaScaled = 50 * scale * scale;
 
   const parsePolyNode = (node: any, multiPoly: MultiPolygon) => {
     if (!node.IsHole()) {
-      const ring = node.Contour().map((p: any) => [p.X / scale, p.Y / scale]);
+      const contour = node.Contour();
+      const area = Math.abs(ClipperLib.Clipper.Area(contour));
+      if (area < minAreaScaled) return; // Skip tiny artifacts
+
+      const ring = contour.map((p: any) => [p.X / scale, p.Y / scale]);
       if (ring.length > 0 && (ring[0][0] !== ring[ring.length - 1][0] || ring[0][1] !== ring[ring.length - 1][1])) ring.push([...ring[0]]);
       if (ring.length >= 4) {
         const poly = [ring];
@@ -864,3 +902,4 @@ export async function generateUniformLineArt(
 
   return null;
 }
+
