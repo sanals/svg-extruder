@@ -5,7 +5,8 @@ import { type SvgModelRef } from '../components/SvgModel';
 import { useHistory } from './useHistory';
 import { exportToSTL } from '../lib/export-utils';
 import { computeAutoExtrudeDepths, calculateLineArtParams, generateSVGFromShapes } from '../lib/app-logic';
-import { preprocessCanvas, stripTinyShardPaths, type PaletteColor } from '../lib/image-preprocess';
+import { preprocessCanvas, type PaletteColor } from '../lib/image-preprocess';
+import { sealAndStraightenSvg } from '../lib/svg-path-cleanup';
 
 export function useAppController() {
   const [svgUrl, setSvgUrl] = useState<string | null>(null);
@@ -509,9 +510,9 @@ export function useAppController() {
         dataUrl,
         (svgStr: string) => {
           if (currentTraceId !== traceIdRef.current) return;
-          // Keep the outer/background color — it is part of the artwork
-          // (e.g. light frame on compleximage, gray surround on icons).
-          const cleanedSvg = stripTinyShardPaths(svgStr);
+          // Keep outer/background fills. Seal empty voids between abutting
+          // colors and straighten stair-step edges (do not delete crumbs into holes).
+          const cleanedSvg = sealAndStraightenSvg(svgStr);
           const blob = new Blob([cleanedSvg], { type: 'image/svg+xml' });
           const svgBlobUrl = URL.createObjectURL(blob);
 
@@ -536,8 +537,9 @@ export function useAppController() {
           strokewidth: 0,
           viewbox: true,
           pathomit: 14,
-          ltres: 1,
-          qtres: 1,
+          ltres: 1.5,
+          qtres: 1.5,
+          rightangleenhance: true,
           roundcoords: 1,
           blurradius: 0,
           blurdelta: 20,

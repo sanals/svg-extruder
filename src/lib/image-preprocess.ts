@@ -44,6 +44,10 @@ function rgbDistance(a: Rgb, b: Rgb): number {
   return Math.abs(a.r - b.r) + Math.abs(a.g - b.g) + Math.abs(a.b - b.b);
 }
 
+function getLuminance(color: Rgb): number {
+  return 0.299 * color.r + 0.587 * color.g + 0.114 * color.b;
+}
+
 function rgbToLab({ r, g, b }: Rgb): Lab {
   let rr = r / 255;
   let gg = g / 255;
@@ -452,6 +456,233 @@ function quantizeToPalette(
   }
 }
 
+function dominantNeighborKey(
+  source: Uint8ClampedArray,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  bgMask: Uint8Array,
+  excludeKey?: number,
+): number | null {
+  const counts = new Map<number, number>();
+  for (let dy = -1; dy <= 1; dy++) {
+    for (let dx = -1; dx <= 1; dx++) {
+      if (dx === 0 && dy === 0) continue;
+      const nx = x + dx;
+      const ny = y + dy;
+      if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
+      const ni = ny * width + nx;
+      if (bgMask[ni]) continue;
+      const nIdx = ni * 4;
+      if (source[nIdx + 3] < 128) continue;
+      const nKey = rgbKey(source[nIdx], source[nIdx + 1], source[nIdx + 2]);
+      if (excludeKey !== undefined && nKey === excludeKey) continue;
+      counts.set(nKey, (counts.get(nKey) ?? 0) + 1);
+    }
+  }
+
+  let bestKey: number | null = null;
+  let bestCount = 0;
+  counts.forEach((count, key) => {
+    if (count > bestCount) {
+      bestCount = count;
+      bestKey = key;
+    }
+  });
+
+  return bestKey;
+}
+
+/**
+ * Morphological opening on each dark/non-background indexed color.
+ * Erode->dilate removes thin stair-step spikes and detached crumbs at boundaries.
+ */
+function morphologicalOpenIndexed(
+  data: Uint8ClampedArray,
+  width: number,
+  height: number,
+  bgMask: Uint8Array,
+  background: Rgb,
+): void {
+  const totalPixels = width * height;
+  const keys = new Set<number>();
+
+  for (let i = 0; i < totalPixels; i++) {
+    if (bgMask[i]) continue;
+    const idx = i * 4;
+    if (data[idx + 3] < 128) continue;
+    const rgb = readRgb(data, idx);
+    if (deltaE76(rgb, background) < 8) continue;
+    if (getLuminance(rgb) >= 200) continue;
+    keys.add(rgbKey(rgb.r, rgb.g, rgb.b));
+  }
+
+  for (const key of keys) {
+    const mask = new Uint8Array(totalPixels);
+    for (let i = 0; i < totalPixels; i++) {
+      if (bgMask[i]) continue;
+      const idx = i * 4;
+      if (data[idx + 3] < 128) continue;
+      const pixelKey = rgbKey(data[idx], data[idx + 1], data[idx + 2]);
+      if (pixelKey === key) mask[i] = 1;
+    }
+
+    const eroded = new Uint8Array(totalPixels);
+    for (let y = 1; y < height - 1; y++) {
+      for (let x = 1; x < width - 1; x++) {
+        const i = y * width + x;
+        if (!mask[i]) continue;
+        let keep = true;
+        for (let dy = -1; dy <= 1 && keep; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            const ni = (y + dy) * width + (x + dx);
+            if (!mask[ni]) {
+              keep = false;
+              break;
+            }
+          }
+        }
+        if (keep) eroded[i] = 1;
+      }
+    }
+
+    const dilated = new Uint8Array(totalPixels);
+    for (let y = 1; y < height - 1; y++) {
+      for (let x = 1; x < width - 1; x++) {
+        let on = false;
+        for (let dy = -1; dy <= 1 && !on; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            const ni = (y + dy) * width + (x + dx);
+            if (eroded[ni]) {
+              on = true;
+              break;
+            }
+          }
+        }
+        if (on) dilated[y * width + x] = 1;
+      }
+    }
+
+    // Tiny-component rejection to avoid reviving crumbs.
+    const keepMask = new Uint8Array(totalPixels);
+    const visited = new Uint8Array(totalPixels);
+    const minComponentArea = 10;
+    const queue: number[] = [];
+
+    for (let i = 0; i < totalPixels; i++) {
+      if (!dilated[i] || visited[i]) continue;
+      let head = 0;
+      queue.length = 0;
+      queue.push(i);
+      visited[i] = 1;
+      while (head < queue.length) {
+        const cur = queue[head++];
+        const x = cur % width;
+        const y = Math.floor(cur / width);
+        const neigh = [[x - 1, y], [x + 1, y], [x, y - 1], [x, y + 1]];
+        for (const [nx, ny] of neigh) {
+          if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
+          const ni = ny * width + nx;
+          if (!dilated[ni] || visited[ni]) continue;
+          visited[ni] = 1;
+          queue.push(ni);
+        }
+      }
+      if (queue.length >= minComponentArea) {
+        for (const q of queue) keepMask[q] = 1;
+      }
+    }
+
+    const color = { r: (key >> 16) & 0xff, g: (key >> 8) & 0xff, b: key & 0xff };
+    const source = new Uint8ClampedArray(data);
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const i = y * width + x;
+        if (bgMask[i]) continue;
+        const idx = i * 4;
+        if (source[idx + 3] < 128) continue;
+        const pixelKey = rgbKey(source[idx], source[idx + 1], source[idx + 2]);
+        if (pixelKey !== key) continue;
+
+        if (keepMask[i]) {
+          writeRgb(data, idx, color);
+          continue;
+        }
+
+        const replacement = dominantNeighborKey(source, x, y, width, height, bgMask, key);
+        if (replacement !== null) {
+          writeRgb(data, idx, {
+            r: (replacement >> 16) & 0xff,
+            g: (replacement >> 8) & 0xff,
+            b: replacement & 0xff,
+          });
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Snap midtone/third-color boundary pixels to one of the two dominant adjacent colors
+ * to keep joins crisp instead of triangulated shard ribbons.
+ */
+function snapTwoColorBoundaries(
+  data: Uint8ClampedArray,
+  width: number,
+  height: number,
+  bgMask: Uint8Array,
+): void {
+  const source = new Uint8ClampedArray(data);
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const i = y * width + x;
+      if (bgMask[i]) continue;
+      const idx = i * 4;
+      if (source[idx + 3] < 128) continue;
+
+      const self = readRgb(source, idx);
+      if (getLuminance(self) >= 200) continue;
+      const selfKey = rgbKey(self.r, self.g, self.b);
+
+      const counts = new Map<number, number>();
+      let total = 0;
+      for (let dy = -2; dy <= 2; dy++) {
+        for (let dx = -2; dx <= 2; dx++) {
+          const nx = x + dx;
+          const ny = y + dy;
+          if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
+          const ni = ny * width + nx;
+          if (bgMask[ni]) continue;
+          const nIdx = ni * 4;
+          if (source[nIdx + 3] < 128) continue;
+          const key = rgbKey(source[nIdx], source[nIdx + 1], source[nIdx + 2]);
+          counts.set(key, (counts.get(key) ?? 0) + 1);
+          total += 1;
+        }
+      }
+
+      if (total < 12 || counts.size < 2) continue;
+      const ranked = Array.from(counts.entries()).sort((a, b) => b[1] - a[1]);
+      const [keyA, countA] = ranked[0];
+      const [keyB, countB] = ranked[1];
+      if (countA + countB < total * 0.7) continue;
+
+      const selfCount = counts.get(selfKey) ?? 0;
+      const isThirdColor = selfKey !== keyA && selfKey !== keyB;
+      const weakMember = (selfKey === keyA || selfKey === keyB) && selfCount <= 2;
+      if (!isThirdColor && !weakMember) continue;
+
+      const colorA = { r: (keyA >> 16) & 0xff, g: (keyA >> 8) & 0xff, b: keyA & 0xff };
+      const colorB = { r: (keyB >> 16) & 0xff, g: (keyB >> 8) & 0xff, b: keyB & 0xff };
+
+      const chooseA = deltaE76(self, colorA) <= deltaE76(self, colorB);
+      writeRgb(data, idx, chooseA ? colorA : colorB);
+    }
+  }
+}
+
 /**
  * Remove 1-pixel anti-alias fringe after quantization.
  * Never erases light/white ink into darker neighbors (protects thin letters like "I").
@@ -723,8 +954,8 @@ export function stripBackgroundFromSvg(svgStr: string, background: PaletteColor 
 }
 
 /**
- * Drop microscopic shard paths left by ImageTracer (few vertices / tiny bbox).
- * Never strips light/white fills (letters, cutouts).
+ * @deprecated Prefer sealAndStraightenSvg — deleting crumbs leaves empty voids.
+ * Kept for compatibility; no longer used in the image-trace pipeline.
  */
 export function stripTinyShardPaths(svgStr: string, minPoints = 8, minSpan = 4): string {
   return svgStr.replace(/<path\b[^>]*\/?>/gi, (pathTag) => {
@@ -739,7 +970,7 @@ export function stripTinyShardPaths(svgStr: string, minPoints = 8, minSpan = 4):
     if (!dMatch) return pathTag;
 
     const nums = dMatch[1].match(/-?\d*\.?\d+/g);
-    if (!nums || nums.length < 4) return '';
+    if (!nums || nums.length < 4) return pathTag; // never delete into empty space
 
     const coords: number[] = nums.map(Number);
     let minX = Infinity;
@@ -758,9 +989,9 @@ export function stripTinyShardPaths(svgStr: string, minPoints = 8, minSpan = 4):
     const area = Math.max(0, spanX) * Math.max(0, spanY);
     const pointCount = Math.floor(coords.length / 2);
 
-    // Tiny crumbs along joins — regardless of how many jaggy vertices they have.
-    if (area < 20 || span < minSpan) return '';
-    if (pointCount < minPoints && area < 80) return '';
+    // Guarded: do not strip — empty voids are worse than tiny crumbs.
+    if (area < 20 || span < minSpan) return pathTag;
+    if (pointCount < minPoints && area < 80) return pathTag;
 
     return pathTag;
   });
@@ -794,15 +1025,15 @@ export function preprocessCanvas(
   const bgMask = floodFillBackgroundMask(data, width, height, background);
 
   // Keep full source dimensions so the SVG viewBox matches the uploaded image.
-  // Background is flattened in-place and stripped from the SVG after tracing.
+  // Background is flattened in-place; downstream tracing keeps all fills intact.
   let palette = buildPalette(data, width, height, bgMask, background, maxContentColors);
   quantizeToPalette(data, width, height, palette, bgMask, background);
   dissolveFringeColors(data, width, height, bgMask, background);
+  morphologicalOpenIndexed(data, width, height, bgMask, background);
+  snapTwoColorBoundaries(data, width, height, bgMask);
   despeckleIndexed(data, width, height, bgMask, 2);
-  // Second fringe pass after despeckle catches leftover AA crumbs.
-  dissolveFringeColors(data, width, height, bgMask, background);
 
-  // Rebuild palette from the cleaned raster so ImageTracer never sees dissolved fringe colors.
+  // Rebuild palette from the cleaned raster so ImageTracer sees only consolidated colors.
   palette = extractPaletteFromImage(data, width, height, bgMask, background);
 
   const suggestedColorCount = Math.min(
