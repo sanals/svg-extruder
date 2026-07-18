@@ -2,10 +2,12 @@ import React from 'react';
 import { Download } from 'lucide-react';
 import { HoverSlider } from './HoverSlider';
 
+export type PrinterProfileType = 'A1 Mini (180x180)' | 'X1/P1/A1 (256x256)';
+
 interface ExportDialogProps {
   setShowExportOptions: (show: boolean) => void;
-  printerProfile: string;
-  setPrinterProfile: (val: string) => void;
+  printerProfile: PrinterProfileType;
+  setPrinterProfile: (val: PrinterProfileType) => void;
   gridSize: string;
   setGridSize: (val: string) => void;
   mergeColors3MF: boolean;
@@ -58,7 +60,7 @@ export const ExportDialog: React.FC<ExportDialogProps> = ({
           <div style={{ display: 'flex', gap: '0.75rem', marginBottom: '1rem' }}>
             <div style={{ flex: 1 }}>
               <label className="checkbox-label" style={{ fontSize: '0.75rem', marginBottom: '0.35rem', color: '#94a3b8' }}>Printer Profile</label>
-              <select className="custom-select" value={printerProfile} onChange={(e) => setPrinterProfile(e.target.value)}>
+              <select className="custom-select" value={printerProfile} onChange={(e) => setPrinterProfile(e.target.value as PrinterProfileType)}>
                 <option value="A1 Mini (180x180)">A1 Mini (180x180)</option>
                 <option value="X1/P1/A1 (256x256)">X1/P1/A1 (256x256)</option>
               </select>

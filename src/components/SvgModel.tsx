@@ -162,7 +162,9 @@ export const SvgModel = forwardRef<SvgModelRef, SvgModelProps>(({
     if (!svgData) return;
     let isMounted = true;
     (async () => {
-      const shapes = await processGeometry(svgData, cutOverlaps, onParseProgress);
+      const shapes = await processGeometry(svgData, cutOverlaps, (msg) => {
+        if (isMounted && onParseProgress) onParseProgress(msg);
+      });
       if (isMounted && shapes.length > 0) {
         setShapesWithColors(shapes);
         geomCache.current.clear(); // Clear cache when shapes change

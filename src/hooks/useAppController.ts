@@ -75,6 +75,7 @@ export function useAppController() {
   const [clearance, setClearance] = useState<number>(0.0);
 
   const colorChangeTimeout = useRef<number | null>(null);
+  const traceIdRef = useRef<number>(0);
 
   const currentMeshColors = meshColors.map(m => ({
     id: m.id,
@@ -487,11 +488,13 @@ export function useAppController() {
   };
 
   const traceImage = (dataUrl: string, colors: number) => {
+    const currentTraceId = ++traceIdRef.current;
     setIsTracing("Step 2/3: Vectorizing Pixels to SVG...");
     setTimeout(() => {
       ImageTracer.imageToSVG(
         dataUrl,
         (svgStr: string) => {
+          if (currentTraceId !== traceIdRef.current) return;
           const blob = new Blob([svgStr], { type: 'image/svg+xml' });
           const svgBlobUrl = URL.createObjectURL(blob);
 
@@ -510,7 +513,7 @@ export function useAppController() {
         {
           numberofcolors: colors,
           colorquantcycles: 15,
-          mincolorratio: 0.005,
+          mincolorratio: 0,
           strokewidth: 0,
           viewbox: true,
           blurradius: 2,
