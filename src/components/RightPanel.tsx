@@ -34,8 +34,11 @@ export interface RightPanelProps {
   handleCreateBorder: () => void;
   isBordering: boolean;
   borderStatus: string | null;
-  borderOuterOnly: boolean;
-  setBorderOuterOnly: (v: boolean) => void;
+  borderMode: 'inner' | 'outer' | 'both' | 'custom';
+  setBorderMode: (v: 'inner' | 'outer' | 'both' | 'custom') => void;
+  customBorderColor: string | null;
+  setCustomBorderColor: (c: string) => void;
+  adjacentColors: string[];
   expandAmount: number;
   setExpandAmount: (v: number) => void;
   handleExpandSelected: () => void;
@@ -55,8 +58,9 @@ export const RightPanel: React.FC<RightPanelProps> = (props) => {
     isExtracting, extractStatus, handleCreateBasePlate, isBasePlating, basePlateStatus,
     handleSplitDisjoint, isSplitting, splitStatus, handlePreviewShards, isAbsorbingShards,
     pendingShards, ignoredShardColors, setIgnoredShardColors, setPendingShards, confirmAbsorbShards,
-    borderWidth, setBorderWidth, handleCreateBorder, isBordering, borderStatus, borderOuterOnly,
-    setBorderOuterOnly, expandAmount, setExpandAmount, handleExpandSelected, isExpanding,
+    borderWidth, setBorderWidth, handleCreateBorder, isBordering, borderStatus, borderMode,
+    setBorderMode, customBorderColor, setCustomBorderColor, adjacentColors,
+    expandAmount, setExpandAmount, handleExpandSelected, isExpanding,
     expandStatus, smoothAmount, setSmoothAmount, handleSmoothSelected, isSmoothing, smoothStatus
   } = props;
 
@@ -192,10 +196,77 @@ export const RightPanel: React.FC<RightPanelProps> = (props) => {
                   <div style={{ flex: 1 }}><HoverSlider min={0.1} max={20} step={0.1} value={borderWidth} onChange={(e: any) => setBorderWidth(parseFloat(e.target.value))} /></div>
                   <button style={{ fontSize: '0.65rem', padding: '0.2rem 0.5rem', backgroundColor: '#eab308', border: 'none', color: 'white', borderRadius: '4px', cursor: isBordering ? 'not-allowed' : 'pointer', whiteSpace: 'nowrap', minWidth: '60px' }} onClick={handleCreateBorder} disabled={isBordering}>{isBordering ? borderStatus || "Working..." : "Generate"}</button>
                 </div>
-                <label style={{ display: 'flex', alignItems: 'center', fontSize: '0.65rem', color: '#cbd5e1', marginTop: '4px', cursor: 'pointer' }}>
-                  <input type="checkbox" checked={borderOuterOnly} onChange={(e) => setBorderOuterOnly(e.target.checked)} style={{ marginRight: '4px' }} />
-                  Outer Edges Only
-                </label>
+                <div style={{ display: 'flex', flexDirection: 'column', marginTop: '8px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.65rem', marginBottom: '4px', color: '#94a3b8' }}>
+                    <span>Border Edge Target</span>
+                  </div>
+                  <div style={{ display: 'flex', backgroundColor: 'rgba(0,0,0,0.2)', borderRadius: '6px', padding: '2px', border: '1px solid rgba(255,255,255,0.05)' }}>
+                    <button
+                      onClick={() => setBorderMode('inner')}
+                      style={{
+                        flex: 1, padding: '4px 8px', fontSize: '0.65rem', border: 'none', borderRadius: '4px', cursor: 'pointer',
+                        backgroundColor: borderMode === 'inner' ? '#3b82f6' : 'transparent',
+                        color: borderMode === 'inner' ? '#fff' : '#94a3b8',
+                        transition: 'all 0.2s', fontWeight: borderMode === 'inner' ? 600 : 400
+                      }}
+                      title="Generate border only where touching other shapes"
+                    >Inner</button>
+                    <button
+                      onClick={() => setBorderMode('outer')}
+                      style={{
+                        flex: 1, padding: '4px 8px', fontSize: '0.65rem', border: 'none', borderRadius: '4px', cursor: 'pointer',
+                        backgroundColor: borderMode === 'outer' ? '#3b82f6' : 'transparent',
+                        color: borderMode === 'outer' ? '#fff' : '#94a3b8',
+                        transition: 'all 0.2s', fontWeight: borderMode === 'outer' ? 600 : 400
+                      }}
+                      title="Generate border only on the outside empty space"
+                    >Outer</button>
+                    <button
+                      onClick={() => setBorderMode('both')}
+                      style={{
+                        flex: 1, padding: '4px 8px', fontSize: '0.65rem', border: 'none', borderRadius: '4px', cursor: 'pointer',
+                        backgroundColor: borderMode === 'both' ? '#3b82f6' : 'transparent',
+                        color: borderMode === 'both' ? '#fff' : '#94a3b8',
+                        transition: 'all 0.2s', fontWeight: borderMode === 'both' ? 600 : 400
+                      }}
+                      title="Generate border everywhere"
+                    >Both</button>
+                    <button
+                      onClick={() => setBorderMode('custom')}
+                      style={{
+                        flex: 1, padding: '4px 8px', fontSize: '0.65rem', border: 'none', borderRadius: '4px', cursor: 'pointer',
+                        backgroundColor: borderMode === 'custom' ? '#3b82f6' : 'transparent',
+                        color: borderMode === 'custom' ? '#fff' : '#94a3b8',
+                        transition: 'all 0.2s', fontWeight: borderMode === 'custom' ? 600 : 400
+                      }}
+                      title="Generate border only touching specific adjacent colors"
+                    >Target</button>
+                  </div>
+                  {borderMode === 'custom' && (
+                    <div style={{ marginTop: '8px', padding: '6px', backgroundColor: 'rgba(0,0,0,0.2)', borderRadius: '6px', border: '1px solid rgba(255,255,255,0.05)' }}>
+                      <div style={{ fontSize: '0.6rem', color: '#cbd5e1', marginBottom: '6px' }}>Target Adjacent Color</div>
+                      <div style={{ display: 'flex', gap: '4px', overflowX: 'auto', paddingBottom: '4px' }}>
+                        {adjacentColors.length === 0 ? (
+                          <div style={{ fontSize: '0.65rem', color: '#64748b' }}>No adjacent parts found</div>
+                        ) : (
+                          adjacentColors.map(colorHex => (
+                            <div
+                              key={colorHex}
+                              onClick={() => setCustomBorderColor(colorHex)}
+                              style={{
+                                width: '20px', height: '20px', backgroundColor: `#${colorHex}`, borderRadius: '4px',
+                                cursor: 'pointer', border: customBorderColor === colorHex ? '2px solid #fff' : '1px solid rgba(255,255,255,0.2)',
+                                boxShadow: customBorderColor === colorHex ? '0 0 0 2px rgba(59,130,246,0.5)' : 'none',
+                                flexShrink: 0
+                              }}
+                              title={`#${colorHex}`}
+                            />
+                          ))
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
               </div>
               <div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.7rem', marginBottom: '4px', color: '#cbd5e1' }}>

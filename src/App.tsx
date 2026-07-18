@@ -67,7 +67,9 @@ function App() {
     smoothStatus,
     isBordering,
     borderWidth,
-    borderOuterOnly,
+    borderMode,
+    customBorderColor,
+    adjacentColors,
     borderStatus,
     handleAutoSelectSimilar,
     handleAutoExtrude,
@@ -111,7 +113,8 @@ function App() {
     setIgnoredShardColors,
     setPendingShards,
     setBorderWidth,
-    setBorderOuterOnly,
+    setBorderMode,
+    setCustomBorderColor,
     setExpandAmount,
     setSmoothAmount,
     handleConvertToLineArt,
@@ -294,8 +297,11 @@ function App() {
           handleCreateBorder={handleCreateBorder}
           isBordering={isBordering}
           borderStatus={borderStatus}
-          borderOuterOnly={borderOuterOnly}
-          setBorderOuterOnly={setBorderOuterOnly}
+          borderMode={borderMode}
+          setBorderMode={setBorderMode}
+          customBorderColor={customBorderColor}
+          setCustomBorderColor={setCustomBorderColor}
+          adjacentColors={adjacentColors}
           expandAmount={expandAmount}
           setExpandAmount={setExpandAmount}
           handleExpandSelected={handleExpandSelected}

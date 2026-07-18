@@ -323,7 +323,9 @@ export function useAppController() {
 
   const [isBordering, setIsBordering] = useState(false);
   const [borderWidth, setBorderWidth] = useState(2.0);
-  const [borderOuterOnly, setBorderOuterOnly] = useState(true);
+  const [borderMode, setBorderMode] = useState<'inner' | 'outer' | 'both' | 'custom'>('outer');
+  const [customBorderColor, setCustomBorderColor] = useState<string | null>(null);
+  const [adjacentColors, setAdjacentColors] = useState<string[]>([]);
   const [borderStatus, setBorderStatus] = useState<string | null>(null);
 
   const handlePreviewShards = async () => {
@@ -466,7 +468,7 @@ export function useAppController() {
     if (selectedMeshIds.length === 0 || !svgModelRef.current) return;
     pushToHistory(); setIsBordering(true); setBorderStatus("Creating border...");
     try {
-      const newIds = await svgModelRef.current.createUniformBorder(selectedMeshIds, borderWidth, borderOuterOnly, (msg: string) => setBorderStatus(msg));
+      const newIds = await svgModelRef.current.createUniformBorder(selectedMeshIds, borderWidth, borderMode, customBorderColor, (msg: string) => setBorderStatus(msg));
       if (newIds && newIds.length > 0) {
         const avgDepth = selectedMeshIds.reduce((sum, id) => sum + (meshDepths[id] ?? 0), 0) / selectedMeshIds.length;
         setMeshDepths(prev => {
@@ -476,7 +478,7 @@ export function useAppController() {
         });
         setMeshColorOverrides(prev => {
           const next = { ...prev };
-          newIds.forEach(id => next[id] = "202020");
+          newIds.forEach(id => next[id] = "000000");
           return next;
         });
         setSelectedMeshIds(newIds);
@@ -675,6 +677,22 @@ export function useAppController() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [selectedMeshIds, handleDeleteSelected]);
 
+  // Handle border mode changes and custom adjacencies
+  useEffect(() => {
+    if (borderMode === 'custom' && selectedMeshIds.length > 0 && svgModelRef.current) {
+      svgModelRef.current.getAdjacentColors(selectedMeshIds).then(colors => {
+        setAdjacentColors(colors);
+        if (colors.length > 0 && (!customBorderColor || !colors.includes(customBorderColor))) {
+          setCustomBorderColor(colors[0]);
+        } else if (colors.length === 0) {
+          setCustomBorderColor(null);
+        }
+      });
+    } else {
+      setAdjacentColors([]);
+    }
+  }, [borderMode, selectedMeshIds]);
+
   return {
     svgUrl, setSvgUrl, fitTrigger, setFitTrigger, rawSvgContent, setRawSvgContent, imageDataUrl, setImageDataUrl,
     colorCount, setColorCount, selectedMeshIds, setSelectedMeshIds, vertexCount, setVertexCount, isTracing, setIsTracing,
@@ -695,7 +713,8 @@ export function useAppController() {
     isAbsorbingShards, setIsAbsorbingShards, isSplitting, setIsSplitting, splitStatus, setSplitStatus,
     isExpanding, setIsExpanding, expandAmount, setExpandAmount, expandStatus, setExpandStatus,
     isSmoothing, setIsSmoothing, smoothAmount, setSmoothAmount, smoothStatus, setSmoothStatus,
-    isBordering, setIsBordering, borderWidth, setBorderWidth, borderOuterOnly, setBorderOuterOnly,
+    isBordering, setIsBordering, borderWidth, setBorderWidth, borderMode, setBorderMode,
+    customBorderColor, setCustomBorderColor, adjacentColors,
     borderStatus, setBorderStatus, handlePreviewShards, confirmAbsorbShards,
     handleSplitDisjoint, handleExtractInner, handleCreateBasePlate, inheritProperties,
     handleExpandSelected, handleSmoothSelected, handleCreateBorder, traceImage,

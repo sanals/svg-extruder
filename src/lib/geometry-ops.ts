@@ -384,7 +384,8 @@ export async function createUniformBorder(
   shapesWithColors: ShapeItem[],
   selectedIds: string[],
   widthAmount: number,
-  outerOnly: boolean,
+  borderMode: 'inner' | 'outer' | 'both' | 'custom',
+  customColorHex: string | null,
   onProgress: (msg: string) => void
 ): Promise<{ updatedShapes: ShapeItem[], newIds: string[] } | null> {
   const itemsToBorder = shapesWithColors.filter(item => selectedIds.includes(item.id) && item.shapes.length > 0);
@@ -446,10 +447,22 @@ export async function createUniformBorder(
   // @ts-ignore
   borderClipper.AddPaths(unionPaths, ClipperLib.PolyType.ptClip, true);
 
-  if (outerOnly) {
-     onProgress("Removing internal adjacencies...");
+  // Calculate the raw border ring (expanded - original)
+  const borderRingTree = new ClipperLib.PolyTree();
+  // @ts-ignore
+  borderClipper.Execute(ClipperLib.ClipType.ctDifference, borderRingTree, ClipperLib.PolyFillType.pftNonZero, ClipperLib.PolyFillType.pftNonZero);
+
+  let finalTree = borderRingTree;
+
+  if (borderMode === 'outer' || borderMode === 'inner' || borderMode === 'custom') {
+     onProgress(borderMode === 'outer' ? "Removing internal adjacencies..." : "Processing adjacencies...");
+     
+     const otherPaths: any[] = [];
      shapesWithColors.forEach(item => {
        if (!selectedIds.includes(item.id)) {
+         // In 'custom' mode, only include shapes of the target color
+         if (borderMode === 'custom' && item.colorHex !== customColorHex) return;
+         
          item.shapes.forEach(shape => {
            const polygon = shapeToPolygon(shape);
            for (let i = 0; i < polygon.length; i++) {
@@ -458,18 +471,39 @@ export async function createUniformBorder(
              const clipperPath = ring.map(p => ({ X: Math.round(p[0] * scale), Y: Math.round(p[1] * scale) }));
              const isOuter = (i === 0);
              if (isOuter !== ClipperLib.Clipper.Orientation(clipperPath)) clipperPath.reverse();
-             // @ts-ignore
-             borderClipper.AddPath(clipperPath, ClipperLib.PolyType.ptClip, true);
+             otherPaths.push(clipperPath);
            }
          });
        }
      });
-  }
 
-  // @ts-ignore
-  const finalTree = new ClipperLib.PolyTree();
-  // @ts-ignore
-  borderClipper.Execute(ClipperLib.ClipType.ctDifference, finalTree, ClipperLib.PolyFillType.pftNonZero, ClipperLib.PolyFillType.pftNonZero);
+     if (otherPaths.length > 0) {
+       const getPaths = (tree: any): any[] => {
+         const paths: any[] = [];
+         const collect = (node: any) => {
+            const contour = node.Contour();
+            if (contour.length > 0) paths.push(contour);
+            node.Childs().forEach(collect);
+         };
+         tree.Childs().forEach(collect);
+         return paths;
+       };
+
+       const borderPaths = getPaths(borderRingTree);
+       
+       const modeClipper = new ClipperLib.Clipper();
+       // @ts-ignore
+       modeClipper.AddPaths(borderPaths, ClipperLib.PolyType.ptSubject, true);
+       // @ts-ignore
+       modeClipper.AddPaths(otherPaths, ClipperLib.PolyType.ptClip, true);
+       
+       finalTree = new ClipperLib.PolyTree();
+       // In custom and inner modes, we use intersection. In outer mode, difference.
+       const clipType = borderMode === 'outer' ? ClipperLib.ClipType.ctDifference : ClipperLib.ClipType.ctIntersection;
+       // @ts-ignore
+       modeClipper.Execute(clipType, finalTree, ClipperLib.PolyFillType.pftNonZero, ClipperLib.PolyFillType.pftNonZero);
+     }
+  }
 
   const parsePolyNode = (node: any, multiPoly: MultiPolygon) => {
     if (!node.IsHole()) {
@@ -501,6 +535,101 @@ export async function createUniformBorder(
   }
 
   return null;
+}
+
+export async function getAdjacentColors(
+  shapesWithColors: ShapeItem[],
+  selectedIds: string[]
+): Promise<string[]> {
+  const itemsToBorder = shapesWithColors.filter(item => selectedIds.includes(item.id) && item.shapes.length > 0);
+  if (itemsToBorder.length === 0) return [];
+
+  const scale = 10000;
+  const widthScaled = 2 * scale; // expand by 2 pixels to find adjacency
+
+  // 1. Union selected shapes
+  const clipper = new ClipperLib.Clipper();
+  itemsToBorder.forEach(item => {
+    item.shapes.forEach(shape => {
+      const polygon = shapeToPolygon(shape);
+      for (let i = 0; i < polygon.length; i++) {
+         const ring = polygon[i];
+         if (ring.length < 3) continue;
+         const clipperPath = ring.map(p => ({ X: Math.round(p[0] * scale), Y: Math.round(p[1] * scale) }));
+         const isOuter = (i === 0);
+         if (isOuter !== ClipperLib.Clipper.Orientation(clipperPath)) clipperPath.reverse();
+         // @ts-ignore
+         clipper.AddPath(clipperPath, ClipperLib.PolyType.ptSubject, true);
+      }
+    });
+  });
+
+  // @ts-ignore
+  const unionTree = new ClipperLib.PolyTree();
+  // @ts-ignore
+  clipper.Execute(ClipperLib.ClipType.ctUnion, unionTree, ClipperLib.PolyFillType.pftNonZero, ClipperLib.PolyFillType.pftNonZero);
+
+  const getPaths = (tree: any): any[] => {
+    const paths: any[] = [];
+    const collect = (node: any) => {
+       const contour = node.Contour();
+       if (contour.length > 0) paths.push(contour);
+       node.Childs().forEach(collect);
+    };
+    tree.Childs().forEach(collect);
+    return paths;
+  };
+  
+  const unionPaths = getPaths(unionTree);
+
+  // 2. Expand
+  const co = new ClipperLib.ClipperOffset();
+  // @ts-ignore
+  co.AddPaths(unionPaths, ClipperLib.JoinType.jtRound, ClipperLib.EndType.etClosedPolygon);
+  // @ts-ignore
+  const expandedTree = new ClipperLib.PolyTree();
+  co.Execute(expandedTree, widthScaled);
+  const expandedPaths = getPaths(expandedTree);
+
+  // 3. For every unselected shape, check intersection with expandedPaths
+  const adjacentColors = new Set<string>();
+
+  for (const item of shapesWithColors) {
+    if (selectedIds.includes(item.id)) continue;
+    if (adjacentColors.has(item.colorHex)) continue; // Already found
+
+    const otherClipper = new ClipperLib.Clipper();
+    // @ts-ignore
+    otherClipper.AddPaths(expandedPaths, ClipperLib.PolyType.ptSubject, true);
+    
+    // add item paths
+    let hasPaths = false;
+    item.shapes.forEach(shape => {
+      const polygon = shapeToPolygon(shape);
+      for (let i = 0; i < polygon.length; i++) {
+        const ring = polygon[i];
+        if (ring.length < 3) continue;
+        const clipperPath = ring.map(p => ({ X: Math.round(p[0] * scale), Y: Math.round(p[1] * scale) }));
+        const isOuter = (i === 0);
+        if (isOuter !== ClipperLib.Clipper.Orientation(clipperPath)) clipperPath.reverse();
+        // @ts-ignore
+        otherClipper.AddPath(clipperPath, ClipperLib.PolyType.ptClip, true);
+        hasPaths = true;
+      }
+    });
+
+    if (hasPaths) {
+      // @ts-ignore
+      const intersectionTree = new ClipperLib.PolyTree();
+      // @ts-ignore
+      otherClipper.Execute(ClipperLib.ClipType.ctIntersection, intersectionTree, ClipperLib.PolyFillType.pftNonZero, ClipperLib.PolyFillType.pftNonZero);
+      if (getPaths(intersectionTree).length > 0) {
+        adjacentColors.add(item.colorHex);
+      }
+    }
+  }
+
+  return Array.from(adjacentColors);
 }
 
 export async function splitDisjoint(
@@ -862,9 +991,10 @@ export async function generateUniformLineArt(
     }
   }
 
-  // --- Step 4: Convert to shapes, filtering out tiny artifacts ---
-  // Minimum area threshold: scale^2 means 1 square real-pixel.
-  // Use 50 sq pixels as minimum to remove point-like artifacts at junctions.
+  // --- Step 4: Subtract the line art from all light shapes to "cut the model" ---
+  const lineArtPaths = getPaths(finalTree);
+  let updatedShapesWithColors = shapesWithColors;
+
   const minAreaScaled = 50 * scale * scale;
 
   const parsePolyNode = (node: any, multiPoly: MultiPolygon) => {
@@ -888,6 +1018,43 @@ export async function generateUniformLineArt(
     }
   };
 
+  if (lineArtPaths.length > 0) {
+      updatedShapesWithColors = shapesWithColors.map(item => {
+         if (!lightShapeIds.includes(item.id)) return item;
+         
+         const clipper = new ClipperLib.Clipper();
+         let hasSubject = false;
+         item.shapes.forEach(shape => {
+             const polygon = shapeToPolygon(shape);
+             for (let i = 0; i < polygon.length; i++) {
+                 const ring = polygon[i];
+                 if (ring.length < 3) continue;
+                 const clipperPath = ring.map(p => ({ X: Math.round(p[0] * scale), Y: Math.round(p[1] * scale) }));
+                 const isOuter = (i === 0);
+                 if (isOuter !== ClipperLib.Clipper.Orientation(clipperPath)) clipperPath.reverse();
+                 // @ts-ignore
+                 clipper.AddPath(clipperPath, ClipperLib.PolyType.ptSubject, true);
+                 hasSubject = true;
+             }
+         });
+         
+         if (!hasSubject) return item;
+         
+         // @ts-ignore
+         clipper.AddPaths(lineArtPaths, ClipperLib.PolyType.ptClip, true);
+         // @ts-ignore
+         const clippedTree = new ClipperLib.PolyTree();
+         // @ts-ignore
+         clipper.Execute(ClipperLib.ClipType.ctDifference, clippedTree, ClipperLib.PolyFillType.pftNonZero, ClipperLib.PolyFillType.pftNonZero);
+         
+         const multiPoly: MultiPolygon = [];
+         // @ts-ignore
+         clippedTree.Childs().forEach((child: any) => parsePolyNode(child, multiPoly));
+         return { ...item, shapes: multiPolygonToShapes(multiPoly) };
+      });
+  }
+
+  // --- Step 5: Convert to shapes, filtering out tiny artifacts ---
   const finalMultiPoly: MultiPolygon = [];
   // @ts-ignore
   finalTree.Childs().forEach((child: any) => parsePolyNode(child, finalMultiPoly));
@@ -897,7 +1064,7 @@ export async function generateUniformLineArt(
   if (shapes.length > 0) {
     const id = `lineart_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
     const newItem = { id, color: new THREE.Color(0x000000), colorHex: "000000", shapes };
-    return { updatedShapes: [...shapesWithColors, newItem], newIds: [id] };
+    return { updatedShapes: [...updatedShapesWithColors, newItem], newIds: [id] };
   }
 
   return null;

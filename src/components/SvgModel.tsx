@@ -7,8 +7,8 @@ import { processGeometry } from '../lib/svg-parser';
 import { DashedEdges } from './DashedEdges';
 import {
   extractInnerParts, createBasePlate, absorbShards, smoothSelected,
-  expandSelected, createUniformBorder, splitDisjoint, fuseSelected,
-  generateUniformLineArt
+  generateUniformLineArt, expandSelected, createUniformBorder, splitDisjoint, fuseSelected,
+  getAdjacentColors
 } from '../lib/geometry-ops';
 import { sliceAndExport } from '../lib/export-utils';
 
@@ -35,7 +35,8 @@ export interface SvgModelRef {
   smoothSelected: (selectedIds: string[], amount: number, onProgress: (msg: string) => void) => Promise<string[] | null>;
   splitDisjoint: (selectedIds: string[], onProgress: (msg: string) => void) => Promise<string[] | null>;
   expandSelected: (selectedIds: string[], amount: number, onProgress: (msg: string) => void) => Promise<string[] | null>;
-  createUniformBorder: (selectedIds: string[], width: number, outerOnly: boolean, onProgress: (msg: string) => void) => Promise<string[] | null>;
+  createUniformBorder: (selectedIds: string[], width: number, borderMode: 'inner' | 'outer' | 'both' | 'custom', customColorHex: string | null, onProgress: (msg: string) => void) => Promise<string[] | null>;
+  getAdjacentColors: (selectedIds: string[]) => Promise<string[]>;
   generateUniformLineArt: (width: number, lightShapeIds: string[], darkShapeIds: string[], onProgress: (msg: string) => void) => Promise<string[] | null>;
   sliceAndExport: (buildPlateSize: number, gridSize: string, printerModel: string, mergeByColor: boolean, customScale: number, clearance: number, scaleZProportionally: boolean, onProgress: (msg: string) => void) => Promise<Blob | null>;
   getShapes: () => ShapeItem[];
@@ -90,6 +91,9 @@ export const SvgModel = forwardRef<SvgModelRef, SvgModelProps>(({
   };
 
   useImperativeHandle(ref, () => ({
+    getAdjacentColors: async (selectedIds) => {
+      return getAdjacentColors(shapesWithColors, selectedIds);
+    },
     getShapes: () => shapesWithColors,
     setShapes: (shapes) => setShapesWithColors(shapes),
     getShapeAreas: () => {
@@ -121,8 +125,8 @@ export const SvgModel = forwardRef<SvgModelRef, SvgModelProps>(({
       const res = await expandSelected(shapesWithColors, selectedIds, amount, meshColorOverrides, onProgress);
       return handleUpdatedShapes(res);
     },
-    createUniformBorder: async (selectedIds, width, outerOnly, onProgress) => {
-      const res = await createUniformBorder(shapesWithColors, selectedIds, width, outerOnly, onProgress);
+    createUniformBorder: async (selectedIds, width, borderMode, customColorHex, onProgress) => {
+      const res = await createUniformBorder(shapesWithColors, selectedIds, width, borderMode, customColorHex, onProgress);
       return handleUpdatedShapes(res);
     },
     generateUniformLineArt: async (width, lightShapeIds, darkShapeIds, onProgress) => {
