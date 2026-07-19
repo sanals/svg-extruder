@@ -62,6 +62,9 @@ function App() {
     mergeBeforeExport,
     printFaceDown,
     canPrintFaceDown,
+    colorOnFaceOnly,
+    faceColorDepthMm,
+    faceBaseColorHex,
     meshColorOverrides,
     meshDepths,
     mergeColors3MF,
@@ -141,6 +144,9 @@ function App() {
     setClearance,
     setMergeBeforeExport,
     setPrintFaceDown,
+    setColorOnFaceOnly,
+    setFaceColorDepthMm,
+    setFaceBaseColorHex,
     setIgnoredShardColors,
     setPendingShards,
     setBorderWidth,
@@ -397,6 +403,12 @@ function App() {
           printFaceDown={printFaceDown}
           setPrintFaceDown={setPrintFaceDown}
           canPrintFaceDown={canPrintFaceDown}
+          colorOnFaceOnly={colorOnFaceOnly}
+          setColorOnFaceOnly={setColorOnFaceOnly}
+          faceColorDepthMm={faceColorDepthMm}
+          setFaceColorDepthMm={setFaceColorDepthMm}
+          faceBaseColorHex={faceBaseColorHex}
+          setFaceBaseColorHex={setFaceBaseColorHex}
           thinWallParts={thinWallParts}
           handleSelectThinParts={handleSelectThinParts}
           handleExport3MF={handleExport3MF}

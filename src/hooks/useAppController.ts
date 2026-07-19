@@ -59,6 +59,9 @@ export function useAppController() {
   const [shapeAreasCache, setShapeAreasCache] = useState<{ id: string, area: number }[] | null>(null);
   const [mergeBeforeExport, setMergeBeforeExport] = useState<boolean>(false);
   const [printFaceDown, setPrintFaceDown] = useState<boolean>(false);
+  const [colorOnFaceOnly, setColorOnFaceOnly] = useState<boolean>(false);
+  const [faceColorDepthMm, setFaceColorDepthMm] = useState<number>(0.2);
+  const [faceBaseColorHex, setFaceBaseColorHex] = useState<string>('ffffff');
 
   const [meshColors, setMeshColors] = useState<{ id: string, colorHex: string }[]>([]);
   const [meshColorOverrides, setMeshColorOverrides] = useState<Record<string, string>>({});
@@ -336,7 +339,9 @@ export function useAppController() {
       const zipBlob = await svgModelRef.current.sliceAndExport(
         buildPlateSize, gridSize, printerModel, mergeColors3MF, customScale / 100.0, mergeColors3MF ? 0 : clearance, scaleZProportionally,
         (msg) => setExportStatus(msg),
-        printFaceDown && canPrintFaceDown
+        printFaceDown && canPrintFaceDown,
+        colorOnFaceOnly ? faceColorDepthMm : 0,
+        faceBaseColorHex
       );
 
       if (zipBlob) {
@@ -1207,6 +1212,8 @@ export function useAppController() {
     highlightStyle, setHighlightStyle, sealGaps, setSealGaps, backingDepth, setBackingDepth, cutOverlaps, setCutOverlaps,
     selectSizeThreshold, setSelectSizeThreshold, shapeAreasCache, setShapeAreasCache, mergeBeforeExport, setMergeBeforeExport,
     printFaceDown, setPrintFaceDown, canPrintFaceDown,
+    colorOnFaceOnly, setColorOnFaceOnly, faceColorDepthMm, setFaceColorDepthMm,
+    faceBaseColorHex, setFaceBaseColorHex,
     meshColors, setMeshColors, meshColorOverrides, setMeshColorOverrides, meshDepths, setMeshDepths,
     mergeColors3MF, setMergeColors3MF, isMerging, setIsMerging, isFusingSelection, setIsFusingSelection,
     fuseStatus, setFuseStatus, isExtracting, setIsExtracting, extractStatus, setExtractStatus,

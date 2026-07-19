@@ -62,13 +62,23 @@ function generateMeshObjectXml(
   if (geo.index) {
     geo = geo.toNonIndexed() // Flatten first to guarantee clean welding
   }
-  geo = BufferGeometryUtils.mergeVertices(geo, 1e-4)
+  geo = BufferGeometryUtils.mergeVertices(geo, 1e-3)
   if (!geo.getAttribute('normal')) {
     geo.computeVertexNormals()
   }
 
   const pos = geo.getAttribute("position")
-  const index = geo.getIndex()
+  let index = geo.getIndex()
+
+  // mergeVertices should index; if not, build sequential tris from non-indexed verts
+  if (!index && pos) {
+    const triCount = Math.floor(pos.count / 3)
+    const idx = new Uint32Array(triCount * 3)
+    for (let i = 0; i < triCount * 3; i++) idx[i] = i
+    geo.setIndex(new THREE.BufferAttribute(idx, 1))
+    index = geo.getIndex()
+  }
+
   const verts: string[] = []
   const tris: string[] = []
 

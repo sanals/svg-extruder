@@ -8,13 +8,46 @@ import * as ClipperLib from 'clipper-lib';
 
 const yieldThread = () => new Promise(r => requestAnimationFrame(() => setTimeout(r, 0)));
 
+/** Reverse triangle winding (needed after odd number of axis reflections). */
+export function flipTriangleWinding(geo: THREE.BufferGeometry): void {
+  const index = geo.getIndex();
+  if (index) {
+    const arr = index.array as Uint16Array | Uint32Array;
+    for (let i = 0; i < arr.length; i += 3) {
+      const tmp = arr[i + 1];
+      arr[i + 1] = arr[i + 2];
+      arr[i + 2] = tmp;
+    }
+    index.needsUpdate = true;
+    return;
+  }
+  const pos = geo.getAttribute('position');
+  if (!pos) return;
+  const arr = pos.array as Float32Array;
+  for (let i = 0; i < arr.length; i += 9) {
+    // swap vertex 1 and 2 of each triangle
+    for (let c = 0; c < 3; c++) {
+      const a = i + 3 + c;
+      const b = i + 6 + c;
+      const tmp = arr[a];
+      arr[a] = arr[b];
+      arr[b] = tmp;
+    }
+  }
+  pos.needsUpdate = true;
+}
+
 /** Weld verts + normals for slicer-friendly solids. Never bevel here. */
-export function hardenExportGeometry(geo: THREE.BufferGeometry): THREE.BufferGeometry {
+export function hardenExportGeometry(
+  geo: THREE.BufferGeometry,
+  /** Prefer ~1e-3 after mm-scale; ~1e-4 in raw model units. */
+  weldTolerance: number = 1e-3
+): THREE.BufferGeometry {
   let g = geo;
   if (g.index) {
     g = g.toNonIndexed();
   }
-  g = BufferGeometryUtils.mergeVertices(g, 1e-4);
+  g = BufferGeometryUtils.mergeVertices(g, weldTolerance);
   g.computeVertexNormals();
   g.deleteAttribute('uv');
   return g;
@@ -103,7 +136,9 @@ export async function sliceAndExport(
   meshColorOverrides: Record<string, string>,
   backingDepth: number,
   onProgress: (msg: string) => void,
-  printFaceDown: boolean = false
+  printFaceDown: boolean = false,
+  faceColorDepthMm: number = 0,
+  baseColorHex: string = 'ffffff'
 ): Promise<Blob | null> {
   // _sealGaps is preview-only (viewport bevel); export never enables ExtrudeGeometry bevel.
   void _sealGaps;
@@ -115,6 +150,13 @@ export async function sliceAndExport(
     meshDepths
   );
   const doFlipFaceDown = printFaceDown && heightsUniform;
+
+  const baseHexNorm = baseColorHex.replace('#', '').toLowerCase();
+  const baseColorPrint = `#${baseHexNorm}`;
+  const faceColorEnabled = faceColorDepthMm > 0;
+  const faceColorMmClamped = faceColorEnabled
+    ? Math.min(1, Math.max(0.02, faceColorDepthMm))
+    : 0;
 
   onProgress("Analyzing model dimensions...");
   await yieldThread();
@@ -210,12 +252,126 @@ export async function sliceAndExport(
     geom.applyMatrix4(matrix);
   };
 
-  const buildScaledSolid = (shapes: THREE.Shape[], totalDepth: number): THREE.BufferGeometry | null => {
-    const geom = extrudeForExport(shapes, totalDepth);
-    if (!geom) return null;
+  /** Model-unit Z scale applied in applyExportScale (physical_mm = depth * zScale). */
+  const zScale = scaleZProportionally ? 0.1 * scaleFactor : 0.1;
+  const faceDepthModel = faceColorEnabled ? faceColorMmClamped / zScale : 0;
+
+  /**
+   * Scale to mm, optional face-down flip, fix winding for odd reflections, weld in mm-space.
+   * Y scale is always negative (1 reflection). Face-down adds a Z reflection → even → no winding fix.
+   */
+  const finalizeScaledGeom = (geom: THREE.BufferGeometry): THREE.BufferGeometry => {
     applyExportScale(geom);
-    if (doFlipFaceDown) flipFaceDown(geom);
-    return hardenExportGeometry(geom);
+    if (doFlipFaceDown) {
+      flipFaceDown(geom);
+    } else {
+      flipTriangleWinding(geom);
+    }
+    return hardenExportGeometry(geom, 1e-3);
+  };
+
+  const buildScaledSolidAtZ = (
+    shapes: THREE.Shape[],
+    depth: number,
+    zOffsetModel: number = 0
+  ): THREE.BufferGeometry | null => {
+    const geom = extrudeForExport(shapes, depth);
+    if (!geom) return null;
+    if (zOffsetModel !== 0) geom.translate(0, 0, zOffsetModel);
+    return finalizeScaledGeom(geom);
+  };
+
+  const buildScaledSolid = (shapes: THREE.Shape[], totalDepth: number): THREE.BufferGeometry | null => {
+    return buildScaledSolidAtZ(shapes, totalDepth, 0);
+  };
+
+  /** One shared base + per-color thin face shells (no overlapping base bodies). */
+  const buildFaceOnlyPlateItems = (parts: ClippedPart[]): PrintItem[] => {
+    if (parts.length === 0 || faceDepthModel <= 0) return [];
+
+    const maxDepth = Math.max(...parts.map(p => p.totalDepth));
+    const faceD = Math.min(faceDepthModel, maxDepth);
+    const bodyD = maxDepth - faceD;
+    const items: PrintItem[] = [];
+
+    if (bodyD > 1e-8) {
+      try {
+        const united = unionMultiPolygons(parts.map(p => p.multiPoly));
+        const shapes = multiPolygonToShapes(united);
+        if (shapes.length > 0) {
+          const bodyGeom = buildScaledSolidAtZ(shapes, bodyD, 0);
+          if (bodyGeom) {
+            items.push({
+              id: `base_${Math.random().toString(36).substring(7)}`,
+              geometry: bodyGeom,
+              colorHex: baseColorPrint,
+              name: 'FaceOnly_Base',
+            });
+          }
+        }
+      } catch (err) {
+        console.error('Failed to union shared base silhouette', err);
+        // Fallback: per-part bodies only if union fails (worse, but better than empty)
+        for (const part of parts) {
+          const shapes = multiPolygonToShapes(part.multiPoly);
+          const partFace = Math.min(faceDepthModel, part.totalDepth);
+          const partBody = part.totalDepth - partFace;
+          if (partBody <= 1e-8 || shapes.length === 0) continue;
+          const g = buildScaledSolidAtZ(shapes, partBody, 0);
+          if (g) {
+            items.push({
+              id: `base_${part.id}`,
+              geometry: g,
+              colorHex: baseColorPrint,
+              name: `FaceOnly_Base_${part.id}`,
+            });
+          }
+        }
+      }
+    }
+
+    const colorGroups: Record<string, ClippedPart[]> = {};
+    parts.forEach(part => {
+      if (!colorGroups[part.colorHex]) colorGroups[part.colorHex] = [];
+      colorGroups[part.colorHex].push(part);
+    });
+
+    for (const [hex, group] of Object.entries(colorGroups)) {
+      let faceGeom: THREE.BufferGeometry | null = null;
+      try {
+        const united = unionMultiPolygons(group.map(p => p.multiPoly));
+        const shapes = multiPolygonToShapes(united);
+        if (shapes.length > 0) {
+          faceGeom = buildScaledSolidAtZ(shapes, faceD, bodyD);
+        }
+      } catch (err) {
+        console.error('Failed to union face color group', hex, err);
+      }
+
+      if (!faceGeom) {
+        const geoms: THREE.BufferGeometry[] = [];
+        for (const part of group) {
+          const shapes = multiPolygonToShapes(part.multiPoly);
+          if (shapes.length === 0) continue;
+          const partFace = Math.min(faceDepthModel, part.totalDepth);
+          const partBody = part.totalDepth - partFace;
+          const g = buildScaledSolidAtZ(shapes, partFace, partBody);
+          if (g) geoms.push(g);
+        }
+        if (geoms.length > 0) faceGeom = concatGeometries(geoms);
+      }
+
+      if (faceGeom) {
+        items.push({
+          id: `face_${Math.random().toString(36).substring(7)}`,
+          geometry: faceGeom,
+          colorHex: hex,
+          name: `FaceOnly_${hex}`,
+        });
+      }
+    }
+
+    return items;
   };
 
   onProgress("Applying assembly clearance...");
@@ -322,7 +478,11 @@ export async function sliceAndExport(
 
       const itemsForPlate: PrintItem[] = [];
 
-      if (mergeByColor) {
+      if (faceColorEnabled) {
+        onProgress("Building shared base + face color shells...");
+        await yieldThread();
+        itemsForPlate.push(...buildFaceOnlyPlateItems(clippedParts));
+      } else if (mergeByColor) {
         onProgress("Unioning shapes by color...");
         await yieldThread();
 
@@ -347,7 +507,6 @@ export async function sliceAndExport(
           }
 
           if (!geom) {
-            // Fallback: extrude each part, then buffer-concat
             const geoms: THREE.BufferGeometry[] = [];
             for (const part of parts) {
               const shapes = multiPolygonToShapes(part.multiPoly);
@@ -453,8 +612,11 @@ export function exportToSTL(
     if (geometries.length > 0 && meshesParent) {
       try {
         let mergedGeometry = BufferGeometryUtils.mergeGeometries(geometries, true);
-        if (printFaceDown) flipFaceDown(mergedGeometry);
-        const hardened = hardenExportGeometry(mergedGeometry);
+        if (printFaceDown) {
+          flipFaceDown(mergedGeometry);
+          flipTriangleWinding(mergedGeometry);
+        }
+        const hardened = hardenExportGeometry(mergedGeometry, 1e-3);
         const mergedMesh = new THREE.Mesh(hardened, materials);
 
         const parent = meshesParent as THREE.Object3D;
@@ -472,8 +634,11 @@ export function exportToSTL(
       if ((child as THREE.Mesh).isMesh) {
         const mesh = child as THREE.Mesh;
         let geom = mesh.geometry.clone();
-        if (printFaceDown) flipFaceDown(geom);
-        mesh.geometry = hardenExportGeometry(geom);
+        if (printFaceDown) {
+          flipFaceDown(geom);
+          flipTriangleWinding(geom);
+        }
+        mesh.geometry = hardenExportGeometry(geom, 1e-3);
       }
     });
   }
