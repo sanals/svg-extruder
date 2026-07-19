@@ -4,7 +4,9 @@
  * To retire a backend: unregister it and delete its module/deps.
  */
 
-export type TracerId = 'vtracer' | 'imagetracer';
+export type TracerId = 'vtracer' | 'vectorize-image' | 'imagetracer';
+
+export type VTracerPresetId = 'logo' | 'sketch' | 'photo';
 
 export interface TracerPaletteColor {
   r: number;
@@ -14,14 +16,18 @@ export interface TracerPaletteColor {
 }
 
 export interface TraceRequest {
-  /** Posterized (or prepared) RGBA buffer. */
+  /** Prepared RGBA buffer (posterized when lockPalette is true). */
   data: Uint8ClampedArray;
   width: number;
   height: number;
   /** UI color-count slider (max palette size). */
   colorCount: number;
-  /** Exact palette used for posterize / SVG snap. */
+  /** Exact palette used for posterize / SVG snap (empty when unlocked). */
   palette: TracerPaletteColor[];
+  /** When true, backends may assume ≤colorCount flat colors. */
+  lockPalette?: boolean;
+  /** VTracer website-style preset (ignored by ImageTracer). */
+  preset?: VTracerPresetId;
 }
 
 export interface TracerBackend {

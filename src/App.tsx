@@ -3,6 +3,7 @@ import { Canvas } from '@react-three/fiber';
 import { OrbitControls, Bounds, useBounds } from '@react-three/drei';
 
 import { SvgModel } from './components/SvgModel';
+import { SvgComparePreview } from './components/SvgComparePreview';
 import { TopNav } from './components/TopNav';
 import { LeftPanel } from './components/LeftPanel';
 import { RightPanel } from './components/RightPanel';
@@ -24,6 +25,11 @@ function App() {
   const ctrl = useAppController();
   const {
     svgUrl,
+    previewSvgUrl,
+    pipelinePhase,
+    handlePromoteTo3D,
+    handleBackToSvgPreview,
+    handleMergeSvgFills,
     fitTrigger,
     rawSvgContent,
     imageDataUrl,
@@ -31,6 +37,8 @@ function App() {
     tracerId,
     tracerBackends,
     handleTracerChange,
+    vtracerPreset,
+    handleVtracerPresetChange,
     selectedMeshIds,
     vertexCount,
     isTracing,
@@ -163,6 +171,11 @@ function App() {
           rawSvgContent={rawSvgContent}
           handleFileUpload={handleFileUpload}
           svgUrl={svgUrl}
+          pipelinePhase={pipelinePhase}
+          previewSvgUrl={previewSvgUrl}
+          handlePromoteTo3D={handlePromoteTo3D}
+          handleBackToSvgPreview={handleBackToSvgPreview}
+          handleMergeSvgFills={handleMergeSvgFills}
           generateSVGFromCurrentShapes={generateSVGFromCurrentShapes}
           uniqueColors={uniqueColors}
           handleAutoExtrude={handleAutoExtrude}
@@ -173,6 +186,8 @@ function App() {
           tracerId={tracerId}
           tracerBackends={tracerBackends}
           handleTracerChange={handleTracerChange}
+          vtracerPreset={vtracerPreset}
+          handleVtracerPresetChange={handleVtracerPresetChange}
           highlightStyle={highlightStyle}
           setHighlightStyle={setHighlightStyle}
           currentMeshColors={currentMeshColors}
@@ -213,13 +228,19 @@ function App() {
             </div>
           )}
 
-          {!svgUrl && !isTracing && !fuseStatus && (
+          {!svgUrl && !previewSvgUrl && !isTracing && !fuseStatus && (
             <div className="empty-state">
               Upload an SVG or Image to get started
             </div>
           )}
 
-          {svgUrl && (
+          {pipelinePhase === 'svgPreview' && previewSvgUrl && (
+            <div style={{ position: 'absolute', inset: 0 }}>
+              <SvgComparePreview sourceUrl={imageDataUrl} svgUrl={previewSvgUrl} />
+            </div>
+          )}
+
+          {pipelinePhase === 'extrudeReady' && svgUrl && (
             <Canvas frameloop="demand" camera={{ position: [0, 0, 100], fov: 50 }} onPointerMissed={() => setSelectedMeshIds([])}>
               <ambientLight intensity={0.5} />
               <directionalLight position={[10, 10, 10]} intensity={1} castShadow />

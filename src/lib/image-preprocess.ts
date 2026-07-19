@@ -29,12 +29,13 @@ const MIN_COLOR_COUNT = 2;
 const MAX_COLOR_COUNT = 64;
 /** Cap for auto-suggested slider value (flat art rarely needs more). */
 const DEFAULT_MAX_CONTENT_COLORS = 16;
-const MEDIAN_CUT_TARGET = 32;
+/** Upper bound for median-cut over-segmentation (scales with requested N). */
+const MEDIAN_CUT_HARD_CAP = 192;
 /** Only merge very close fringe colors; intentional two-tones (two greens/pinks) stay. */
 const MERGE_DELTA_E = 9;
 /**
- * Stronger merge for VTracer posterize so near-shades of one flat fill
- * collapse into a single palette entry (fixes green/pink over-split).
+ * Base Delta-E for VTracer posterize collapse. Softer when the user asks for
+ * more colors so raising the slider can actually grow the palette.
  */
 const CONTENT_MERGE_DELTA_E = 16;
 const BACKGROUND_SEED_TOLERANCE = 18;
@@ -403,7 +404,7 @@ function buildPalette(
   const sampled = sampleContentPixels(data, width, height, bgMask);
   if (sampled.length === 0) return [background];
 
-  let palette = mergeSimilarPalette(medianCut(sampled, MEDIAN_CUT_TARGET), 8);
+  let palette = mergeSimilarPalette(medianCut(sampled, MEDIAN_CUT_HARD_CAP), 8);
   const frequencies = countColorFrequencies(sampled, palette);
   palette = collapsePalette(palette, frequencies, maxContentColors, MERGE_DELTA_E);
 
@@ -1210,18 +1211,20 @@ function buildContentPalette(
   const sampled = sampleContentPixels(data, width, height, bgMask);
   if (sampled.length === 0) return [WHITE];
 
+  const n = Math.max(MIN_COLOR_COUNT, Math.min(MAX_COLOR_COUNT, Math.round(maxContentColors)));
   // Over-segment then collapse — frequency-aware merge beats truncating.
-  const cutTarget = Math.min(
-    MEDIAN_CUT_TARGET,
-    Math.max(maxContentColors * 2, maxContentColors),
-  );
+  // Scale cut target with N so raising the slider can discover more flats.
+  const cutTarget = Math.min(MEDIAN_CUT_HARD_CAP, Math.max(n * 4, 32));
+  // Aggressive merge at low N (print flats); softer when user wants many colors.
+  const mergeDeltaE =
+    n >= 48 ? 8 : n >= 32 ? 10 : n >= 16 ? 12 : CONTENT_MERGE_DELTA_E;
   let palette = mergeSimilarPalette(medianCut(sampled, cutTarget), 8);
   const frequencies = countColorFrequencies(sampled, palette);
   palette = collapsePalette(
     palette,
     frequencies,
-    maxContentColors,
-    CONTENT_MERGE_DELTA_E,
+    n,
+    mergeDeltaE,
   );
 
   // Preserve eye sclera whites and soft grey crescents — sparse samples that
@@ -1267,7 +1270,7 @@ function buildContentPalette(
     const whiteIdx = ranked.findIndex(e => rgbDistance(e.c, WHITE) <= 5);
     if (whiteIdx >= 0) keep.add(ranked[whiteIdx].i);
     for (const entry of ranked) {
-      if (keep.size >= maxContentColors) break;
+      if (keep.size >= n) break;
       keep.add(entry.i);
     }
     palette = palette.filter((_, i) => keep.has(i));

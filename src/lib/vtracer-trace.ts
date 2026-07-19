@@ -5,9 +5,33 @@
 
 import type { VTracerWorkerRequest, VTracerWorkerResponse } from './vtracer.worker';
 
+/** Matches vectorize-image.app Logo / Sketch / Photo presets. */
+export type VTracerPreset = 'logo' | 'sketch' | 'photo';
+
 export interface VTracerTraceOptions {
-  /** Approximate palette size hint from the UI color slider. */
+  /** Approximate palette size hint from the UI color slider (print / lock path). */
   colorCount?: number;
+  /**
+   * Website-style preset (Vectorize Image backend).
+   * UI bits/speckle are converted to Runner loss / area before wasm.
+   */
+  preset?: VTracerPreset;
+  /**
+   * When true (VTracer print path), tune for posterized ≤N colors.
+   * When false (Vectorize Image), use preset knobs like vectorize-image.app.
+   */
+  lockPalette?: boolean;
+}
+
+/** Site UI color_precision bits → Runner is_same_color_a loss (cmdapp). */
+function bitsToLoss(bits: number): number {
+  return Math.max(0, Math.min(8, 8 - Math.round(bits)));
+}
+
+/** Site UI filter_speckle → area in px² (cmdapp: n*n). */
+function speckleToArea(n: number): number {
+  const v = Math.max(0, Math.round(n));
+  return v * v;
 }
 
 /** Config shape expected by vtracer-wasm (camelCase). */
@@ -30,14 +54,12 @@ function degToRad(deg: number): number {
 }
 
 /**
- * Build config for clip-art / logos.
- * `colorPrecision` is Runner `is_same_color_a` loss (cmdapp: `8 - bits`).
- * `filterSpeckle` is area in px².
+ * Print / locked-palette path: input is already posterized to ≤N flats.
+ * Stronger loss so VTracer does not re-split a single flat into near-shades.
+ * (Locked path still uses Runner-style loss values, not webapp UI bits.)
  */
 export function buildVtracerConfig(colorCount: number): VTracerConfig {
   const colors = Math.max(2, Math.min(64, Math.round(colorCount)));
-  // Input is already posterized to ≤N flat colors. Use strong same-color loss
-  // so VTracer does not re-split a single flat into near-shade layers.
   let colorPrecision: number;
   let layerDifference: number;
   if (colors <= 4) {
@@ -56,8 +78,6 @@ export function buildVtracerConfig(colorCount: number): VTracerConfig {
     colorPrecision = 2;
     layerDifference = 16;
   }
-  // Drop 1–few-pixel fringe clusters (trash AA / edge crumbs).
-  const filterSpeckle = 12 * 12;
 
   return {
     binary: false,
@@ -67,11 +87,64 @@ export function buildVtracerConfig(colorCount: number): VTracerConfig {
     lengthThreshold: 3,
     maxIterations: 10,
     spliceThreshold: degToRad(30),
-    filterSpeckle,
+    filterSpeckle: 12 * 12,
     colorPrecision,
     layerDifference,
     pathPrecision: 3,
   };
+}
+
+/**
+ * vectorize-image.app–style presets for vtracer-wasm.
+ * Site UI shows bits/speckle; wasm expects loss/area (same as our print path).
+ * Logo advanced: color 6 → loss 2, speck 4 → area 16, path 2.
+ * Curve defaults from visioncortex demo: corner 60°, length 4, splice 45°.
+ */
+export function buildVtracerPresetConfig(preset: VTracerPreset = 'logo'): VTracerConfig {
+  const base: VTracerConfig = {
+    binary: false,
+    mode: 'spline',
+    hierarchical: 'stacked',
+    cornerThreshold: degToRad(60),
+    lengthThreshold: 4,
+    maxIterations: 10,
+    spliceThreshold: degToRad(45),
+    filterSpeckle: speckleToArea(4),
+    colorPrecision: bitsToLoss(6),
+    layerDifference: 16,
+    pathPrecision: 2,
+  };
+
+  if (preset === 'sketch') {
+    return {
+      ...base,
+      binary: true,
+      colorPrecision: bitsToLoss(1),
+      layerDifference: 32,
+      filterSpeckle: speckleToArea(8),
+      pathPrecision: 2,
+    };
+  }
+
+  if (preset === 'photo') {
+    return {
+      ...base,
+      colorPrecision: bitsToLoss(8),
+      layerDifference: 8,
+      filterSpeckle: speckleToArea(4),
+      pathPrecision: 2,
+    };
+  }
+
+  // logo (default)
+  return base;
+}
+
+export function resolveVtracerConfig(options: VTracerTraceOptions = {}): VTracerConfig {
+  if (options.lockPalette === false) {
+    return buildVtracerPresetConfig(options.preset ?? 'logo');
+  }
+  return buildVtracerConfig(options.colorCount ?? 16);
 }
 
 let worker: Worker | null = null;
@@ -118,8 +191,7 @@ export async function imageDataToVtracerSvg(
   imageData: ImageData,
   options: VTracerTraceOptions = {},
 ): Promise<string> {
-  const config = buildVtracerConfig(options.colorCount ?? 16);
-  // Transferable copy — leaves the caller's ImageData intact.
+  const config = resolveVtracerConfig(options);
   const pixels = imageData.data.slice().buffer;
   return postToWorker(pixels, imageData.width, imageData.height, config);
 }
@@ -131,7 +203,7 @@ export async function rgbaToVtracerSvg(
   height: number,
   options: VTracerTraceOptions = {},
 ): Promise<string> {
-  const config = buildVtracerConfig(options.colorCount ?? 16);
+  const config = resolveVtracerConfig(options);
   const pixels = rgba.slice().buffer;
   return postToWorker(pixels, width, height, config);
 }

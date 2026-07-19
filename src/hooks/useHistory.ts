@@ -7,6 +7,8 @@ export interface HistoryState {
   meshColors: { id: string; colorHex: string }[];
   shapes?: ShapeItem[];
   selectedMeshIds: string[];
+  /** SVG-stage content (Step 1 merges). Optional for older mesh-only snapshots. */
+  rawSvgContent?: string | null;
 }
 
 export function useHistory(

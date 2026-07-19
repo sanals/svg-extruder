@@ -1,6 +1,7 @@
-import React from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Settings, Upload, Download, Wand2, Palette, Droplet, Combine, WrapText } from 'lucide-react';
 import { HoverSlider } from './HoverSlider';
+import { extractUniqueSvgFills } from '../lib/svg-preview';
 
 export interface LeftPanelProps {
   handleLoadProject: (e: React.ChangeEvent<HTMLInputElement>) => void;
@@ -8,6 +9,11 @@ export interface LeftPanelProps {
   rawSvgContent: string | null;
   handleFileUpload: (e: React.ChangeEvent<HTMLInputElement>) => void;
   svgUrl: string | null;
+  pipelinePhase: 'idle' | 'svgPreview' | 'extrudeReady';
+  previewSvgUrl: string | null;
+  handlePromoteTo3D: () => void;
+  handleBackToSvgPreview: () => void;
+  handleMergeSvgFills: (fromHexes: string[], toHex: string) => void;
   generateSVGFromCurrentShapes: () => string | null;
   uniqueColors: string[];
   handleAutoExtrude: () => void;
@@ -18,6 +24,8 @@ export interface LeftPanelProps {
   tracerId: string;
   tracerBackends: { id: string; label: string; description: string }[];
   handleTracerChange: (id: string) => void;
+  vtracerPreset: 'logo' | 'sketch' | 'photo';
+  handleVtracerPresetChange: (preset: 'logo' | 'sketch' | 'photo') => void;
   highlightStyle: 'dashed' | 'solid';
   setHighlightStyle: (style: 'dashed' | 'solid') => void;
   currentMeshColors: { id: string; colorHex: string }[];
@@ -42,14 +50,57 @@ export interface LeftPanelProps {
 export const LeftPanel: React.FC<LeftPanelProps> = (props) => {
   const {
     handleLoadProject, handleSaveProject, rawSvgContent, handleFileUpload, svgUrl,
+    pipelinePhase, previewSvgUrl, handlePromoteTo3D, handleBackToSvgPreview, handleMergeSvgFills,
     generateSVGFromCurrentShapes, uniqueColors, handleAutoExtrude, handleConvertToLineArt,
     imageDataUrl, colorCount, handleColorCountChange, tracerId, tracerBackends, handleTracerChange,
+    vtracerPreset, handleVtracerPresetChange,
     highlightStyle, setHighlightStyle,
     currentMeshColors, selectedMeshIds, setSelectedMeshIds, selectedUniqueColors,
     isMerging, handleAutoSelectSimilar, toggleColorSelection, initiateFuse,
     isFusingSelection, setIsMerging, executeMergeColors, removeColorFromSelection,
     executeFuse, setIsFusingSelection, handleCustomColorChange, setMeshColorOverrides, pushToHistory
   } = props;
+
+  const svgStageColors = useMemo(
+    () => (pipelinePhase === 'svgPreview' && rawSvgContent ? extractUniqueSvgFills(rawSvgContent) : []),
+    [pipelinePhase, rawSvgContent],
+  );
+  const [selectedSvgFills, setSelectedSvgFills] = useState<string[]>([]);
+  const [isSvgMerging, setIsSvgMerging] = useState(false);
+
+  useEffect(() => {
+    setSelectedSvgFills((prev) => prev.filter((c) => svgStageColors.includes(c)));
+  }, [svgStageColors]);
+
+  useEffect(() => {
+    if (pipelinePhase !== 'svgPreview') {
+      setIsSvgMerging(false);
+      setSelectedSvgFills([]);
+    }
+  }, [pipelinePhase]);
+
+  const toggleSvgFill = (hex: string) => {
+    setSelectedSvgFills((prev) =>
+      prev.includes(hex) ? prev.filter((c) => c !== hex) : [...prev, hex],
+    );
+  };
+
+  const svgColorDistance = (hex1: string, hex2: string) => {
+    const r1 = (parseInt(hex1, 16) >> 16) & 0xff;
+    const g1 = (parseInt(hex1, 16) >> 8) & 0xff;
+    const b1 = parseInt(hex1, 16) & 0xff;
+    const r2 = (parseInt(hex2, 16) >> 16) & 0xff;
+    const g2 = (parseInt(hex2, 16) >> 8) & 0xff;
+    const b2 = parseInt(hex2, 16) & 0xff;
+    return (r1 - r2) ** 2 + (g1 - g2) ** 2 + (b1 - b2) ** 2;
+  };
+
+  const handleAutoSelectSimilarSvg = () => {
+    if (selectedSvgFills.length !== 1) return;
+    const base = selectedSvgFills[0];
+    const similar = svgStageColors.filter((c) => svgColorDistance(base, c) < 2500);
+    setSelectedSvgFills(similar);
+  };
 
   return (
     <div className="left-sidebar">
@@ -91,7 +142,7 @@ export const LeftPanel: React.FC<LeftPanelProps> = (props) => {
             </label>
           </div>
 
-          {svgUrl && (
+          {svgUrl && pipelinePhase === 'extrudeReady' && (
             <>
               <button
                 onClick={() => {
@@ -158,6 +209,161 @@ export const LeftPanel: React.FC<LeftPanelProps> = (props) => {
             </>
           )}
 
+          {(pipelinePhase === 'svgPreview' || (pipelinePhase === 'extrudeReady' && imageDataUrl)) && previewSvgUrl && (
+            <div style={{ marginTop: '0.5rem', display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+              {pipelinePhase === 'svgPreview' && (
+                <button
+                  onClick={handlePromoteTo3D}
+                  style={{
+                    width: '100%', padding: '0.65rem',
+                    background: 'linear-gradient(135deg, #059669, #10b981)',
+                    color: 'white', border: 'none', borderRadius: '8px',
+                    cursor: 'pointer', fontSize: '0.85rem', fontWeight: 600,
+                    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.4rem',
+                  }}
+                >
+                  Continue to 3D
+                </button>
+              )}
+              {pipelinePhase === 'extrudeReady' && imageDataUrl && (
+                <button
+                  onClick={handleBackToSvgPreview}
+                  style={{
+                    width: '100%', padding: '0.45rem',
+                    backgroundColor: '#334155', color: 'white',
+                    border: '1px solid #475569', borderRadius: '6px',
+                    cursor: 'pointer', fontSize: '0.75rem',
+                  }}
+                >
+                  Back to SVG preview
+                </button>
+              )}
+              {pipelinePhase === 'svgPreview' && (
+                <button
+                  onClick={() => {
+                    const link = document.createElement('a');
+                    link.href = previewSvgUrl;
+                    link.download = 'vectorized_preview.svg';
+                    link.click();
+                  }}
+                  style={{
+                    width: '100%', padding: '0.4rem', backgroundColor: '#334155', color: 'white',
+                    border: '1px solid rgba(255,255,255,0.1)', borderRadius: '6px',
+                    cursor: 'pointer', fontSize: '0.75rem', display: 'flex',
+                    alignItems: 'center', justifyContent: 'center', gap: '0.4rem',
+                  }}
+                >
+                  <Download size={14} /> Download SVG
+                </button>
+              )}
+            </div>
+          )}
+
+          {pipelinePhase === 'svgPreview' && svgStageColors.length > 0 && (
+            <div style={{ marginTop: '0.75rem' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.35rem' }}>
+                <div style={{ fontSize: '0.75rem', color: '#94a3b8' }}>
+                  SVG fills ({svgStageColors.length}) — merge before 3D
+                </div>
+                {selectedSvgFills.length === 1 && !isSvgMerging && (
+                  <button
+                    type="button"
+                    onClick={handleAutoSelectSimilarSvg}
+                    style={{ fontSize: '0.65rem', padding: '0.2rem 0.5rem', backgroundColor: '#10b981', border: 'none', color: 'white', borderRadius: '4px', cursor: 'pointer' }}
+                  >
+                    Auto-Select Similar
+                  </button>
+                )}
+              </div>
+              <div style={{
+                display: 'flex', flexWrap: 'wrap', gap: '0.4rem', maxHeight: '120px',
+                overflowY: 'auto', padding: '0.4rem',
+                border: '1px solid rgba(255,255,255,0.1)', borderRadius: '6px',
+                backgroundColor: 'rgba(0,0,0,0.2)', marginBottom: '0.5rem',
+              }}>
+                {svgStageColors.map((hex) => {
+                  const selected = selectedSvgFills.includes(hex);
+                  return (
+                    <div
+                      key={hex}
+                      onClick={() => toggleSvgFill(hex)}
+                      title={`#${hex}`}
+                      style={{
+                        width: '26px', height: '26px', backgroundColor: `#${hex}`, borderRadius: '6px',
+                        cursor: 'pointer',
+                        border: selected ? '2px solid #fff' : '1px solid rgba(255,255,255,0.2)',
+                        boxShadow: selected ? '0 0 0 2px rgba(139,92,246,0.5)' : 'none',
+                        boxSizing: 'border-box',
+                      }}
+                    />
+                  );
+                })}
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsSvgMerging(true)}
+                disabled={selectedSvgFills.length <= 1 || isSvgMerging}
+                style={{
+                  width: '100%', padding: '0.45rem', fontSize: '0.75rem', fontWeight: 600,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.35rem',
+                  backgroundColor: selectedSvgFills.length > 1 ? '#8b5cf6' : '#334155',
+                  color: 'white', border: 'none', borderRadius: '6px',
+                  cursor: selectedSvgFills.length > 1 ? 'pointer' : 'not-allowed',
+                  opacity: selectedSvgFills.length > 1 ? 1 : 0.5,
+                }}
+              >
+                <WrapText size={14} /> Merge Colors
+              </button>
+              {isSvgMerging && (
+                <div style={{ marginTop: '0.5rem', backgroundColor: 'rgba(51,65,85,0.5)', padding: '0.75rem', borderRadius: '6px', border: '1px solid rgba(255,255,255,0.05)' }}>
+                  <div style={{ fontSize: '0.75rem', marginBottom: '0.75rem', color: '#cbd5e1' }}>
+                    Select target color to merge into:
+                  </div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.75rem' }}>
+                    {selectedSvgFills.map((colorHex) => (
+                      <div key={`svg-target-${colorHex}`} style={{ position: 'relative' }}>
+                        <div
+                          onClick={() => {
+                            handleMergeSvgFills(selectedSvgFills, colorHex);
+                            setSelectedSvgFills([]);
+                            setIsSvgMerging(false);
+                          }}
+                          style={{
+                            width: '32px', height: '32px', backgroundColor: `#${colorHex}`, borderRadius: '50%',
+                            cursor: 'pointer', border: '2px solid rgba(255,255,255,0.2)',
+                          }}
+                          title={`Merge into #${colorHex}`}
+                        />
+                        <div
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setSelectedSvgFills((prev) => prev.filter((c) => c !== colorHex));
+                          }}
+                          style={{
+                            position: 'absolute', top: '-4px', right: '-4px', width: '16px', height: '16px',
+                            backgroundColor: '#ef4444', color: 'white', borderRadius: '50%', display: 'flex',
+                            alignItems: 'center', justifyContent: 'center', fontSize: '10px', fontWeight: 'bold',
+                            cursor: 'pointer', border: '1px solid #1e293b',
+                          }}
+                          title="Remove color from selection"
+                        >
+                          ✕
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setIsSvgMerging(false)}
+                    style={{ marginTop: '0.75rem', fontSize: '0.7rem', padding: '0.3rem 0.5rem', backgroundColor: 'transparent', border: '1px solid #64748b', width: '100%', color: '#cbd5e1', cursor: 'pointer' }}
+                  >
+                    Cancel Merge
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
           {imageDataUrl && (
             <div style={{ marginTop: '0.5rem' }}>
               <div style={{ fontSize: '0.75rem', color: '#94a3b8', marginBottom: '0.25rem' }}>
@@ -176,29 +382,61 @@ export const LeftPanel: React.FC<LeftPanelProps> = (props) => {
                   </label>
                 ))}
               </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', color: '#94a3b8', marginBottom: '0.25rem' }}>
-                <label htmlFor="color-count">Image Colors To Extract</label>
-                <span>{colorCount} max</span>
-              </div>
-              <HoverSlider id="color-count" min={2} max={64} step={1} value={colorCount} onChange={handleColorCountChange} displayFormat={(v: number) => Math.round(v).toString()} />
+
+              {tracerId === 'vectorize-image' && (
+                <div style={{ marginBottom: '0.5rem' }}>
+                  <div style={{ fontSize: '0.75rem', color: '#94a3b8', marginBottom: '0.25rem' }}>
+                    Preset
+                  </div>
+                  <div className="segmented-control">
+                    {([
+                      { id: 'logo' as const, label: 'Logo' },
+                      { id: 'sketch' as const, label: 'Sketch' },
+                      { id: 'photo' as const, label: 'Photo' },
+                    ]).map((p) => (
+                      <label key={p.id} title={`${p.label} (vectorize-image.app style)`}>
+                        <input
+                          type="radio"
+                          name="vtracerPreset"
+                          checked={vtracerPreset === p.id}
+                          onChange={() => handleVtracerPresetChange(p.id)}
+                        />
+                        <span>{p.label}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {(tracerId === 'vtracer' || tracerId === 'vectorize-image') && (
+                <>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', color: '#94a3b8', marginBottom: '0.25rem' }}>
+                    <label htmlFor="color-count">Image Colors To Extract</label>
+                    <span>{colorCount} max</span>
+                  </div>
+                  <HoverSlider id="color-count" min={2} max={64} step={1} value={colorCount} onChange={handleColorCountChange} displayFormat={(v: number) => Math.round(v).toString()} />
+                </>
+              )}
             </div>
           )}
         </div>
       </div>
 
-      <div style={{ marginBottom: '1rem' }}>
-        <div style={{ fontSize: '0.75rem', color: '#94a3b8', marginBottom: '0.25rem' }}><Droplet size={12} style={{ marginRight: '4px' }} /> Highlight Style</div>
-        <div className="segmented-control">
-          <label>
-            <input type="radio" name="highlightStyle" checked={highlightStyle === 'dashed'} onChange={() => setHighlightStyle('dashed')} />
-            <span>Dashed</span>
-          </label>
-          <label>
-            <input type="radio" name="highlightStyle" checked={highlightStyle === 'solid'} onChange={() => setHighlightStyle('solid')} />
-            <span>Striped</span>
-          </label>
+      {pipelinePhase === 'extrudeReady' && (
+        <div style={{ marginBottom: '1rem' }}>
+          <div style={{ fontSize: '0.75rem', color: '#94a3b8', marginBottom: '0.25rem' }}><Droplet size={12} style={{ marginRight: '4px' }} /> Highlight Style</div>
+          <div className="segmented-control">
+            <label>
+              <input type="radio" name="highlightStyle" checked={highlightStyle === 'dashed'} onChange={() => setHighlightStyle('dashed')} />
+              <span>Dashed</span>
+            </label>
+            <label>
+              <input type="radio" name="highlightStyle" checked={highlightStyle === 'solid'} onChange={() => setHighlightStyle('solid')} />
+              <span>Striped</span>
+            </label>
+          </div>
         </div>
-      </div>
+      )}
 
       {uniqueColors.length > 0 && (
         <div className="card">
@@ -356,12 +594,12 @@ export const LeftPanel: React.FC<LeftPanelProps> = (props) => {
                       key={`palette-${colorHex}`}
                       onClick={() => {
                         if (selectedMeshIds.length === 0) return;
+                        pushToHistory();
                         setMeshColorOverrides(prev => {
                           const next = { ...prev };
                           selectedMeshIds.forEach(id => next[id] = colorHex);
                           return next;
                         });
-                        pushToHistory();
                       }}
                       style={{
                         minWidth: '20px', height: '20px', backgroundColor: `#${colorHex}`, borderRadius: '4px', cursor: 'pointer', border: '1px solid rgba(255,255,255,0.2)'

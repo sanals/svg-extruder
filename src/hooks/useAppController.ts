@@ -6,21 +6,30 @@ import { exportToSTL } from '../lib/export-utils';
 import { computeAutoExtrudeDepths, calculateLineArtParams, generateSVGFromShapes } from '../lib/app-logic';
 import { prepareCanvasForVtracer, quantizePreparedImage, snapSvgColorsToPalette } from '../lib/image-preprocess';
 import { sealAndStraightenSvg } from '../lib/svg-path-cleanup';
+import { mergeSvgFills, normalizeSvgForPreview } from '../lib/svg-preview';
 import {
   DEFAULT_TRACER_ID,
   isTracerId,
+  isWebsiteTracer,
   listTracerBackends,
   traceRasterToSvg,
   type TracerId,
+  type VTracerPresetId,
 } from '../lib/tracers';
+
+export type PipelinePhase = 'idle' | 'svgPreview' | 'extrudeReady';
 
 export function useAppController() {
   const [svgUrl, setSvgUrl] = useState<string | null>(null);
+  /** Blob URL for 2D SVG preview before promoting to 3D (SvgModel). */
+  const [previewSvgUrl, setPreviewSvgUrl] = useState<string | null>(null);
+  const [pipelinePhase, setPipelinePhase] = useState<PipelinePhase>('idle');
   const [fitTrigger, setFitTrigger] = useState(0);
   const [rawSvgContent, setRawSvgContent] = useState<string | null>(null);
   const [imageDataUrl, setImageDataUrl] = useState<string | null>(null);
   const [colorCount, setColorCount] = useState<number>(8);
   const [tracerId, setTracerId] = useState<TracerId>(DEFAULT_TRACER_ID);
+  const [vtracerPreset, setVtracerPreset] = useState<VTracerPresetId>('logo');
   const [selectedMeshIds, setSelectedMeshIds] = useState<string[]>([]);
 
   const [vertexCount, setVertexCount] = useState<number>(0);
@@ -39,14 +48,19 @@ export function useAppController() {
 
   const sceneRef = useRef<THREE.Group>(null);
   const svgModelRef = useRef<SvgModelRef>(null);
+  const pipelinePhaseRef = useRef<PipelinePhase>('idle');
+  useEffect(() => {
+    pipelinePhaseRef.current = pipelinePhase;
+  }, [pipelinePhase]);
 
   const getCurrentState = useCallback(() => ({
     meshDepths: { ...meshDepths },
     meshColorOverrides: { ...meshColorOverrides },
     meshColors: [...meshColors],
     shapes: svgModelRef.current?.getShapes(),
-    selectedMeshIds: [...selectedMeshIds]
-  }), [meshDepths, meshColorOverrides, meshColors, selectedMeshIds]);
+    selectedMeshIds: [...selectedMeshIds],
+    rawSvgContent,
+  }), [meshDepths, meshColorOverrides, meshColors, selectedMeshIds, rawSvgContent]);
 
   const applyState = useCallback((state: any) => {
     setMeshDepths(state.meshDepths);
@@ -59,6 +73,17 @@ export function useAppController() {
       setSelectedMeshIds(state.selectedMeshIds);
     } else {
       setSelectedMeshIds([]);
+    }
+    if (state.rawSvgContent !== undefined) {
+      setRawSvgContent(state.rawSvgContent);
+      if (typeof state.rawSvgContent === 'string' && pipelinePhaseRef.current === 'svgPreview') {
+        setPreviewSvgUrl((old) => {
+          if (old) URL.revokeObjectURL(old);
+          return URL.createObjectURL(
+            new Blob([normalizeSvgForPreview(state.rawSvgContent)], { type: 'image/svg+xml' }),
+          );
+        });
+      }
     }
   }, []);
 
@@ -277,7 +302,7 @@ export function useAppController() {
   const handleSaveProject = () => {
     if (!rawSvgContent) { alert("No active model to save."); return; }
     const projectData = {
-      rawSvgContent, colorCount, tracerId, meshDepths, meshColorOverrides, selectedMeshIds,
+      rawSvgContent, colorCount, tracerId, vtracerPreset, meshDepths, meshColorOverrides, selectedMeshIds,
       highlightStyle, sealGaps, backingDepth, cutOverlaps, customScale, clearance, printerProfile, gridSize, mergeColors3MF
     };
     const jsonString = JSON.stringify(projectData);
@@ -302,8 +327,13 @@ export function useAppController() {
         setIsTracing("Loading Project...");
         setTimeout(() => {
           setRawSvgContent(projectData.rawSvgContent); setSvgUrl(svgBlobUrl);
+          setPreviewSvgUrl(svgBlobUrl);
+          setPipelinePhase('extrudeReady');
           setColorCount(Math.min(64, Math.max(2, projectData.colorCount || 8)));
           if (isTracerId(projectData.tracerId)) setTracerId(projectData.tracerId);
+          if (projectData.vtracerPreset === 'logo' || projectData.vtracerPreset === 'sketch' || projectData.vtracerPreset === 'photo') {
+            setVtracerPreset(projectData.vtracerPreset);
+          }
           setMeshDepths(projectData.meshDepths || {});
           setMeshColorOverrides(projectData.meshColorOverrides || {}); setSelectedMeshIds(projectData.selectedMeshIds || []);
           setHighlightStyle(projectData.highlightStyle || 'dashed'); setSealGaps(projectData.sealGaps ?? true);
@@ -505,8 +535,9 @@ export function useAppController() {
     colors: number,
     previewDataUrl?: string | null,
     backend: TracerId = tracerId,
+    options?: { preset?: VTracerPresetId },
   ) => {
-    // Cache pre-quantize RGBA so the color slider can re-posterize cleanly.
+    // Cache raw RGBA so color slider / preset / backend can re-trace cleanly.
     sourceRgbaRef.current = {
       data: new Uint8ClampedArray(rgba.data),
       width: rgba.width,
@@ -514,37 +545,91 @@ export function useAppController() {
     };
 
     const clampedColors = Math.min(64, Math.max(2, Math.round(colors)));
-    const { data: quantized, palette } = quantizePreparedImage(
-      rgba.data,
-      rgba.width,
-      rgba.height,
-      clampedColors,
-    );
+    const websiteMode = isWebsiteTracer(backend);
+    const useLock = !websiteMode && backend === 'vtracer';
+    // Limit palette for VTracer print and Vectorize Image (user-controllable max colors).
+    const limitColors = useLock || websiteMode;
+    const preset = options?.preset ?? vtracerPreset;
+
+    let traceData: Uint8ClampedArray = rgba.data;
+    let palette: Array<{ r: number; g: number; b: number }> = [];
+    if (limitColors) {
+      // Posterize to ≤N. Print path also fringe-snaps on a temp canvas first.
+      const canvas = document.createElement('canvas');
+      canvas.width = rgba.width;
+      canvas.height = rgba.height;
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      if (ctx && useLock) {
+        ctx.putImageData(new ImageData(new Uint8ClampedArray(rgba.data), rgba.width, rgba.height), 0, 0);
+        try {
+          const prepared = prepareCanvasForVtracer(canvas);
+          const quantized = quantizePreparedImage(
+            prepared.imageData.data,
+            prepared.imageData.width,
+            prepared.imageData.height,
+            clampedColors,
+          );
+          traceData = quantized.data;
+          palette = quantized.palette;
+        } catch {
+          const quantized = quantizePreparedImage(
+            rgba.data,
+            rgba.width,
+            rgba.height,
+            clampedColors,
+          );
+          traceData = quantized.data;
+          palette = quantized.palette;
+        }
+      } else {
+        const quantized = quantizePreparedImage(
+          rgba.data,
+          rgba.width,
+          rgba.height,
+          clampedColors,
+        );
+        traceData = quantized.data;
+        palette = quantized.palette;
+      }
+    }
 
     const currentTraceId = ++traceIdRef.current;
     setIsTracing("Step 3/4: Vectorizing Pixels to SVG...");
-    // Yield so the status label paints, then run the selected tracer backend.
     setTimeout(async () => {
       try {
         const svgStr = await traceRasterToSvg(backend, {
-          data: quantized,
+          data: traceData,
           width: rgba.width,
           height: rgba.height,
           colorCount: clampedColors,
           palette,
+          lockPalette: useLock,
+          preset,
         });
         if (currentTraceId !== traceIdRef.current) return;
 
-        // Absorb edge crumbs / seal abutting seams (never Clipper-rebuild curves).
-        const cleanedSvg = sealAndStraightenSvg(svgStr);
-        // Lock fills/strokes to the posterize palette so unique mesh colors ≤ slider.
-        const paletteLockedSvg = snapSvgColorsToPalette(cleanedSvg, palette);
-        const blob = new Blob([paletteLockedSvg], { type: 'image/svg+xml' });
-        const svgBlobUrl = URL.createObjectURL(blob);
+        // Seal only on VTracer print. Snap to palette whenever we limited colors
+        // (VI Logo stays unsealed but fill count follows the slider).
+        let finalSvg = svgStr;
+        if (useLock) {
+          finalSvg = sealAndStraightenSvg(svgStr);
+        }
+        if (palette.length > 0) {
+          finalSvg = snapSvgColorsToPalette(finalSvg, palette);
+        }
+        const blob = new Blob([finalSvg], { type: 'image/svg+xml' });
+        // Display-only normalize so ImageTracer / viewBox SVGs fill the compare frame.
+        const previewBlob = new Blob([normalizeSvgForPreview(finalSvg)], { type: 'image/svg+xml' });
+        const previewUrl = URL.createObjectURL(previewBlob);
 
-        setIsTracing("Step 4/4: Parsing 2D Geometry...");
-        setRawSvgContent(paletteLockedSvg);
-        setSvgUrl(svgBlobUrl);
+        setIsTracing(null);
+        setRawSvgContent(finalSvg);
+        setPreviewSvgUrl((prev) => {
+          if (prev) URL.revokeObjectURL(prev);
+          return previewUrl;
+        });
+        if (previewDataUrl) setImageDataUrl(previewDataUrl);
+
         setSelectedMeshIds([]);
         setMeshDepths({});
         setVertexCount(0);
@@ -552,7 +637,23 @@ export function useAppController() {
         setMeshColors([]);
         setMeshColorOverrides({});
         setIsMerging(false);
-        if (previewDataUrl) setImageDataUrl(previewDataUrl);
+
+        if (pipelinePhaseRef.current === 'extrudeReady') {
+          // Re-trace while already in 3D — refresh SvgModel from raw (un-normalized) SVG.
+          const extrudeUrl = URL.createObjectURL(blob);
+          setSvgUrl((old) => {
+            if (old) URL.revokeObjectURL(old);
+            return extrudeUrl;
+          });
+          setIsTracing('Step 4/4: Parsing 2D Geometry...');
+        } else {
+          // First convert (or preview) — show 2D SVG only until Promote.
+          setSvgUrl((old) => {
+            if (old) URL.revokeObjectURL(old);
+            return null;
+          });
+          setPipelinePhase('svgPreview');
+        }
       } catch (err) {
         if (currentTraceId !== traceIdRef.current) return;
         console.error('Vectorization failed', err);
@@ -575,6 +676,8 @@ export function useAppController() {
           setTimeout(() => {
             setRawSvgContent(svgText);
             setSvgUrl(url);
+            setPreviewSvgUrl(url);
+            setPipelinePhase('extrudeReady');
             setImageDataUrl(null);
             setSelectedMeshIds([]);
             setMeshDepths({});
@@ -590,6 +693,7 @@ export function useAppController() {
         const url = URL.createObjectURL(file);
         setIsTracing("Step 1/4: Loading Image...");
         setSvgUrl(null);
+        setPipelinePhase('idle');
 
         const img = new Image();
         img.onload = () => {
@@ -597,7 +701,8 @@ export function useAppController() {
           setTimeout(() => {
             let width = img.width;
             let height = img.height;
-            const maxDim = 1200;
+            // Vectorize Image keeps more resolution; VTracer print path stays lighter.
+            const maxDim = isWebsiteTracer(tracerId) ? 2000 : 1200;
             const wasDownscaled = width > maxDim || height > maxDim;
 
             if (wasDownscaled) {
@@ -619,20 +724,42 @@ export function useAppController() {
               const previewDataUrl = canvas.toDataURL('image/png');
               setIsTracing("Step 2/4: Preparing image for vectorizer...");
               setTimeout(() => {
-                try {
-                  const { imageData, suggestedColorCount } = prepareCanvasForVtracer(canvas);
-                  setColorCount(suggestedColorCount);
+                // Always cache raw pixels; VTracer print applies fringe/posterize at trace time.
+                const imageData = ctx.getImageData(0, 0, width, height);
+                if (tracerId === 'vtracer' || tracerId === 'vectorize-image') {
+                  try {
+                    const { suggestedColorCount } = prepareCanvasForVtracer(canvas);
+                    // VI Logo needs more headroom than print; still far below raw AA hundreds.
+                    const suggested =
+                      tracerId === 'vectorize-image'
+                        ? Math.min(48, Math.max(16, suggestedColorCount * 2))
+                        : suggestedColorCount;
+                    setColorCount(suggested);
+                    traceImage(
+                      { data: imageData.data, width, height },
+                      suggested,
+                      previewDataUrl,
+                      tracerId,
+                      { preset: vtracerPreset },
+                    );
+                  } catch {
+                    const fallback = tracerId === 'vectorize-image' ? 24 : colorCount;
+                    setColorCount(fallback);
+                    traceImage(
+                      { data: imageData.data, width, height },
+                      fallback,
+                      previewDataUrl,
+                      tracerId,
+                      { preset: vtracerPreset },
+                    );
+                  }
+                } else {
                   traceImage(
-                    { data: imageData.data, width: imageData.width, height: imageData.height },
-                    suggestedColorCount,
-                    previewDataUrl,
-                  );
-                } catch {
-                  const fallback = ctx.getImageData(0, 0, width, height);
-                  traceImage(
-                    { data: fallback.data, width, height },
+                    { data: imageData.data, width, height },
                     colorCount,
                     previewDataUrl,
+                    tracerId,
+                    { preset: vtracerPreset },
                   );
                 }
               }, 0);
@@ -672,6 +799,7 @@ export function useAppController() {
 
   const handleCustomColorChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (selectedMeshIds.length === 0) return;
+    pushToHistory();
     const newColorHex = e.target.value.replace('#', '');
     setMeshColorOverrides(prev => {
       const next = { ...prev };
@@ -697,9 +825,9 @@ export function useAppController() {
     colorChangeTimeout.current = window.setTimeout(() => {
       const source = sourceRgbaRef.current;
       if (!source) return;
-      // Re-posterize cached RGBA to N, then re-trace.
+      if (tracerId !== 'vtracer' && tracerId !== 'vectorize-image') return;
       setIsTracing("Step 3/4: Re-vectorizing with new color count...");
-      traceImage(source, newColors, imageDataUrl, tracerId);
+      traceImage(source, newColors, imageDataUrl, tracerId, { preset: vtracerPreset });
     }, 400);
   };
 
@@ -710,7 +838,78 @@ export function useAppController() {
     if (!source || !imageDataUrl) return;
     const label = listTracerBackends().find((b) => b.id === next)?.label ?? next;
     setIsTracing(`Step 3/4: Re-vectorizing with ${label}...`);
-    traceImage(source, colorCount, imageDataUrl, next);
+    traceImage(source, colorCount, imageDataUrl, next, { preset: vtracerPreset });
+  };
+
+  const handleVtracerPresetChange = (next: VTracerPresetId) => {
+    if (next === vtracerPreset) return;
+    setVtracerPreset(next);
+    if (!isWebsiteTracer(tracerId)) return;
+    const source = sourceRgbaRef.current;
+    if (!source || !imageDataUrl) return;
+    setIsTracing("Step 3/4: Re-vectorizing with new preset...");
+    traceImage(source, colorCount, imageDataUrl, tracerId, { preset: next });
+  };
+
+  const handlePromoteTo3D = () => {
+    if (!rawSvgContent) return;
+    // Seal seams for extrusion only — Step 1 preview stays on unsealed rawSvgContent.
+    const sealedSvg = sealAndStraightenSvg(rawSvgContent);
+    const extrudeUrl = URL.createObjectURL(new Blob([sealedSvg], { type: 'image/svg+xml' }));
+    setSvgUrl((old) => {
+      if (old) URL.revokeObjectURL(old);
+      return extrudeUrl;
+    });
+    setSelectedMeshIds([]);
+    setMeshDepths({});
+    setVertexCount(0);
+    clearHistory();
+    setMeshColors([]);
+    setMeshColorOverrides({});
+    setIsMerging(false);
+    setPipelinePhase('extrudeReady');
+    setIsTracing('Step 4/4: Parsing 2D Geometry...');
+  };
+
+  const refreshPreviewFromRaw = (svg: string) => {
+    setPreviewSvgUrl((old) => {
+      if (old) URL.revokeObjectURL(old);
+      return URL.createObjectURL(
+        new Blob([normalizeSvgForPreview(svg)], { type: 'image/svg+xml' }),
+      );
+    });
+  };
+
+  const handleMergeSvgFills = (fromHexes: string[], toHex: string) => {
+    if (!rawSvgContent || fromHexes.length === 0) return;
+    pushToHistory();
+    const next = mergeSvgFills(rawSvgContent, fromHexes, toHex);
+    setRawSvgContent(next);
+    refreshPreviewFromRaw(next);
+  };
+
+  const handleBackToSvgPreview = () => {
+    if (!previewSvgUrl && !rawSvgContent) return;
+    setSvgUrl((old) => {
+      if (old) URL.revokeObjectURL(old);
+      return null;
+    });
+    setSelectedMeshIds([]);
+    setMeshDepths({});
+    setVertexCount(0);
+    setMeshColors([]);
+    setMeshColorOverrides({});
+    setIsMerging(false);
+    setIsTracing(null);
+    clearHistory();
+    setPipelinePhase('svgPreview');
+    if (!previewSvgUrl && rawSvgContent) {
+      setPreviewSvgUrl(
+        URL.createObjectURL(
+          new Blob([normalizeSvgForPreview(rawSvgContent)], { type: 'image/svg+xml' }),
+        ),
+      );
+    }
   };
 
   const handleSelectBySizeChange = (val: number) => {
@@ -771,8 +970,10 @@ export function useAppController() {
   }, [borderMode, selectedMeshIds]);
 
   return {
-    svgUrl, setSvgUrl, fitTrigger, setFitTrigger, rawSvgContent, setRawSvgContent, imageDataUrl, setImageDataUrl,
+    svgUrl, setSvgUrl, previewSvgUrl, pipelinePhase, handlePromoteTo3D, handleBackToSvgPreview, handleMergeSvgFills,
+    fitTrigger, setFitTrigger, rawSvgContent, setRawSvgContent, imageDataUrl, setImageDataUrl,
     colorCount, setColorCount, tracerId, setTracerId, handleTracerChange, tracerBackends: listTracerBackends(),
+    vtracerPreset, handleVtracerPresetChange,
     selectedMeshIds, setSelectedMeshIds, vertexCount, setVertexCount, isTracing, setIsTracing,
     highlightStyle, setHighlightStyle, sealGaps, setSealGaps, backingDepth, setBackingDepth, cutOverlaps, setCutOverlaps,
     selectSizeThreshold, setSelectSizeThreshold, shapeAreasCache, setShapeAreasCache, mergeBeforeExport, setMergeBeforeExport,

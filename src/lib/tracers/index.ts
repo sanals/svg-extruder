@@ -1,20 +1,30 @@
 import { imagetracerBackend } from './imagetracer';
+import { vectorizeImageBackend } from './vectorize-image';
 import { vtracerBackend } from './vtracer';
 import type { TracerBackend, TracerId, TraceRequest } from './types';
 
-export type { TracerBackend, TracerId, TraceRequest, TracerPaletteColor } from './types';
+export type { TracerBackend, TracerId, TraceRequest, TracerPaletteColor, VTracerPresetId } from './types';
 
 /**
  * Registered backends. Order = UI order.
  * To drop a method: remove its import + entry here (and its package if unused).
  */
-const BACKENDS: TracerBackend[] = [vtracerBackend, imagetracerBackend];
+const BACKENDS: TracerBackend[] = [
+  vtracerBackend,
+  vectorizeImageBackend,
+  imagetracerBackend,
+];
 
 const BY_ID = new Map<TracerId, TracerBackend>(
   BACKENDS.map((b) => [b.id, b]),
 );
 
 export const DEFAULT_TRACER_ID: TracerId = 'vtracer';
+
+/** Website-style path: raw pixels, presets, no print seal. */
+export function isWebsiteTracer(id: TracerId | string | undefined): boolean {
+  return id === 'vectorize-image';
+}
 
 export function listTracerBackends(): TracerBackend[] {
   return [...BACKENDS];
