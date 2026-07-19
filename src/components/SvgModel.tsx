@@ -38,7 +38,7 @@ export interface SvgModelRef {
   createUniformBorder: (selectedIds: string[], width: number, borderMode: 'inner' | 'outer' | 'both' | 'custom', customColorHex: string | null, onProgress: (msg: string) => void) => Promise<string[] | null>;
   getAdjacentColors: (selectedIds: string[]) => Promise<string[]>;
   generateUniformLineArt: (width: number, lightShapeIds: string[], darkShapeIds: string[], onProgress: (msg: string) => void) => Promise<string[] | null>;
-  sliceAndExport: (buildPlateSize: number, gridSize: string, printerModel: string, mergeByColor: boolean, customScale: number, clearance: number, scaleZProportionally: boolean, onProgress: (msg: string) => void) => Promise<Blob | null>;
+  sliceAndExport: (buildPlateSize: number, gridSize: string, printerModel: string, mergeByColor: boolean, customScale: number, clearance: number, scaleZProportionally: boolean, onProgress: (msg: string) => void, printFaceDown?: boolean) => Promise<Blob | null>;
   getShapes: () => ShapeItem[];
   setShapes: (shapes: ShapeItem[]) => void;
   getShapeAreas: () => { id: string; area: number }[];
@@ -145,8 +145,8 @@ export const SvgModel = forwardRef<SvgModelRef, SvgModelProps>(({
       const res = await createBasePlate(shapesWithColors, selectedIds, onProgress);
       return handleUpdatedShapes(res);
     },
-    sliceAndExport: async (buildPlateSize, gridSize, printerModel, mergeByColor, customScale, clearance, scaleZProportionally, onProgress) => {
-      return await sliceAndExport(shapesWithColors, buildPlateSize, gridSize, printerModel, mergeByColor, customScale, clearance, scaleZProportionally, meshDepths, sealGaps, meshColorOverrides, backingDepth, onProgress);
+    sliceAndExport: async (buildPlateSize, gridSize, printerModel, mergeByColor, customScale, clearance, scaleZProportionally, onProgress, printFaceDown = false) => {
+      return await sliceAndExport(shapesWithColors, buildPlateSize, gridSize, printerModel, mergeByColor, customScale, clearance, scaleZProportionally, meshDepths, sealGaps, meshColorOverrides, backingDepth, onProgress, printFaceDown);
     }
   }), [shapesWithColors, meshDepths, meshColorOverrides, sealGaps, backingDepth]);
 

@@ -60,6 +60,8 @@ function App() {
     cutOverlaps,
     selectSizeThreshold,
     mergeBeforeExport,
+    printFaceDown,
+    canPrintFaceDown,
     meshColorOverrides,
     meshDepths,
     mergeColors3MF,
@@ -135,6 +137,7 @@ function App() {
     setScaleZProportionally,
     setClearance,
     setMergeBeforeExport,
+    setPrintFaceDown,
     setIgnoredShardColors,
     setPendingShards,
     setBorderWidth,
@@ -387,6 +390,9 @@ function App() {
           setClearance={setClearance}
           mergeBeforeExport={mergeBeforeExport}
           setMergeBeforeExport={setMergeBeforeExport}
+          printFaceDown={printFaceDown}
+          setPrintFaceDown={setPrintFaceDown}
+          canPrintFaceDown={canPrintFaceDown}
           handleExport3MF={handleExport3MF}
           handleExportSTL={handleExportSTLAction}
           svgUrl={svgUrl}

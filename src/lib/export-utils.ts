@@ -1,12 +1,93 @@
 import { buildMultiPlate3MF } from './generic-3mf-exporter';
-import type { ShapeItem, Polygon, MultiPolygon, Ring, PrintItem, PrintPlate } from '../types';
-import { shapeToPolygon, multiPolygonToShapes } from '../lib/clipper-utils';
+import type { ShapeItem, MultiPolygon, Ring, PrintItem, PrintPlate } from '../types';
+import { shapeToPolygon, multiPolygonToShapes, performClipperBoolean } from '../lib/clipper-utils';
 import * as THREE from 'three';
 import * as BufferGeometryUtils from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { STLExporter } from 'three/examples/jsm/exporters/STLExporter.js';
 import * as ClipperLib from 'clipper-lib';
 
 const yieldThread = () => new Promise(r => requestAnimationFrame(() => setTimeout(r, 0)));
+
+/** Weld verts + normals for slicer-friendly solids. Never bevel here. */
+export function hardenExportGeometry(geo: THREE.BufferGeometry): THREE.BufferGeometry {
+  let g = geo;
+  if (g.index) {
+    g = g.toNonIndexed();
+  }
+  g = BufferGeometryUtils.mergeVertices(g, 1e-4);
+  g.computeVertexNormals();
+  g.deleteAttribute('uv');
+  return g;
+}
+
+/** Put former top face on the bed (z=0) without mirroring XY. */
+export function flipFaceDown(geo: THREE.BufferGeometry): void {
+  geo.applyMatrix4(new THREE.Matrix4().makeScale(1, 1, -1));
+  geo.computeBoundingBox();
+  const minZ = geo.boundingBox!.min.z;
+  geo.translate(0, 0, -minZ);
+}
+
+export function areExtrusionHeightsUniform(
+  shapeIds: string[],
+  meshDepths: Record<string, number>
+): boolean {
+  if (shapeIds.length === 0) return false;
+  const first = meshDepths[shapeIds[0]] ?? 0;
+  return shapeIds.every(id => (meshDepths[id] ?? 0) === first);
+}
+
+function extrudeForExport(shapes: THREE.Shape[], totalDepth: number): THREE.BufferGeometry | null {
+  if (totalDepth <= 0) {
+    console.warn('Skipping zero-depth flat for export (open surface is not printable)');
+    return null;
+  }
+  return new THREE.ExtrudeGeometry(shapes, {
+    depth: totalDepth,
+    curveSegments: 32,
+    bevelEnabled: false,
+  });
+}
+
+function unionMultiPolygons(multiPolys: MultiPolygon[]): MultiPolygon {
+  if (multiPolys.length === 0) return [];
+  if (multiPolys.length === 1) return multiPolys[0];
+  try {
+    return performClipperBoolean(
+      multiPolys[0],
+      multiPolys.slice(1),
+      ClipperLib.ClipType.ctUnion
+    );
+  } catch (err) {
+    console.error('Clipper union failed during export', err);
+    throw err;
+  }
+}
+
+function concatGeometries(geoms: THREE.BufferGeometry[]): THREE.BufferGeometry {
+  if (geoms.length === 1) return geoms[0];
+  let totalPositions = 0;
+  geoms.forEach(g => {
+    totalPositions += g.getAttribute('position').count;
+  });
+  const mergedPos = new Float32Array(totalPositions * 3);
+  let offset = 0;
+  geoms.forEach(g => {
+    const pos = g.getAttribute('position');
+    mergedPos.set(pos.array as Float32Array, offset);
+    offset += pos.array.length;
+  });
+  const mergedGeo = new THREE.BufferGeometry();
+  mergedGeo.setAttribute('position', new THREE.BufferAttribute(mergedPos, 3));
+  return hardenExportGeometry(mergedGeo);
+}
+
+type ClippedPart = {
+  multiPoly: MultiPolygon;
+  colorHex: string;
+  totalDepth: number;
+  id: string;
+};
 
 export async function sliceAndExport(
   shapesWithColors: ShapeItem[],
@@ -18,12 +99,22 @@ export async function sliceAndExport(
   clearance: number,
   scaleZProportionally: boolean,
   meshDepths: Record<string, number>,
-  sealGaps: boolean,
+  _sealGaps: boolean,
   meshColorOverrides: Record<string, string>,
   backingDepth: number,
-  onProgress: (msg: string) => void
+  onProgress: (msg: string) => void,
+  printFaceDown: boolean = false
 ): Promise<Blob | null> {
+  // _sealGaps is preview-only (viewport bevel); export never enables ExtrudeGeometry bevel.
+  void _sealGaps;
+
   if (shapesWithColors.length === 0) return null;
+
+  const heightsUniform = areExtrusionHeightsUniform(
+    shapesWithColors.map(s => s.id),
+    meshDepths
+  );
+  const doFlipFaceDown = printFaceDown && heightsUniform;
 
   onProgress("Analyzing model dimensions...");
   await yieldThread();
@@ -92,7 +183,7 @@ export async function sliceAndExport(
 
   const plates: PrintPlate[] = [];
   const clipperScale = 10000;
-  
+
   const parsePolyNode = (node: any, multiPoly: MultiPolygon) => {
     if (!node.IsHole()) {
       const ring: Ring = node.Contour().map((p: any) => [p.X / clipperScale, p.Y / clipperScale]);
@@ -108,6 +199,23 @@ export async function sliceAndExport(
         multiPoly.push(poly);
       }
     }
+  };
+
+  const applyExportScale = (geom: THREE.BufferGeometry) => {
+    const matrix = new THREE.Matrix4().makeScale(
+      0.1 * scaleFactor,
+      -0.1 * scaleFactor,
+      scaleZProportionally ? 0.1 * scaleFactor : 0.1
+    );
+    geom.applyMatrix4(matrix);
+  };
+
+  const buildScaledSolid = (shapes: THREE.Shape[], totalDepth: number): THREE.BufferGeometry | null => {
+    const geom = extrudeForExport(shapes, totalDepth);
+    if (!geom) return null;
+    applyExportScale(geom);
+    if (doFlipFaceDown) flipFaceDown(geom);
+    return hardenExportGeometry(geom);
   };
 
   onProgress("Applying assembly clearance...");
@@ -136,12 +244,12 @@ export async function sliceAndExport(
            co.AddPath(path, ClipperLib.JoinType.jtRound, ClipperLib.EndType.etClosedPolygon);
          }
        });
-       
+
        // @ts-ignore
        const offsettedTree = new ClipperLib.PolyTree();
        // @ts-ignore
        co.Execute(offsettedTree, offsetAmountInClipper);
-       
+
        const resultMultiPoly: MultiPolygon = [];
        // @ts-ignore
        offsettedTree.Childs().forEach((child: any) => parsePolyNode(child, resultMultiPoly));
@@ -168,7 +276,7 @@ export async function sliceAndExport(
 
       ClipperLib.Clipper.Orientation(clipPath);
 
-      const itemsForPlate: PrintItem[] = [];
+      const clippedParts: ClippedPart[] = [];
 
       shapesWithColors.forEach(item => {
         const clipper = new ClipperLib.Clipper();
@@ -197,100 +305,85 @@ export async function sliceAndExport(
         const resultMultiPoly: MultiPolygon = [];
         // @ts-ignore
         solutionTree.Childs().forEach((child: any) => parsePolyNode(child, resultMultiPoly));
-        const clippedShapes = multiPolygonToShapes(resultMultiPoly);
 
-        if (clippedShapes.length > 0) {
+        if (resultMultiPoly.length > 0) {
           const depth = meshDepths[item.id] ?? 0;
           const totalDepth = depth + backingDepth;
-          let geom: THREE.BufferGeometry;
-          if (totalDepth === 0) {
-            geom = new THREE.ShapeGeometry(clippedShapes, 32);
-          } else {
-            geom = new THREE.ExtrudeGeometry(clippedShapes, {
-              depth: totalDepth,
-              curveSegments: 32,
-              bevelEnabled: sealGaps,
-              bevelSize: sealGaps ? 0.2 : 0,
-              bevelThickness: sealGaps ? 0.05 : 0,
-              bevelSegments: sealGaps ? 1 : 0
-            });
-          }
-
-          if (geom.index) {
-            geom = geom.toNonIndexed();
-          }
-          geom.deleteAttribute('normal');
-          geom.deleteAttribute('uv');
-
-          const matrix = new THREE.Matrix4().makeScale(
-            0.1 * scaleFactor,
-            -0.1 * scaleFactor,
-            scaleZProportionally ? 0.1 * scaleFactor : 0.1
-          );
-          geom.applyMatrix4(matrix);
-
           const overriddenHex = meshColorOverrides[item.id];
           const hex = overriddenHex ?? item.colorHex;
-
-          itemsForPlate.push({
-            id: item.id,
-            geometry: geom,
+          clippedParts.push({
+            multiPoly: resultMultiPoly,
             colorHex: `#${hex}`,
-            name: `Part_${item.id}`
+            totalDepth,
+            id: item.id,
           });
         }
       });
 
-      if (itemsForPlate.length > 0) {
-        let mergedItems: PrintItem[] = [];
+      const itemsForPlate: PrintItem[] = [];
 
-        if (mergeByColor) {
-          const colorGroups: Record<string, THREE.BufferGeometry[]> = {};
-          itemsForPlate.forEach(item => {
-            const hex = item.colorHex || "#CCCCCC";
-            if (!colorGroups[hex]) colorGroups[hex] = [];
-            colorGroups[hex].push(item.geometry);
-          });
+      if (mergeByColor) {
+        onProgress("Unioning shapes by color...");
+        await yieldThread();
 
-          Object.entries(colorGroups).forEach(([hex, geoms]) => {
-            if (geoms.length === 1) {
-              mergedItems.push({
- id: Math.random().toString(36).substring(7),
- geometry: geoms[0], colorHex: hex, name: `ColorGroup_${hex}` });
-            } else {
-              try {
-                let totalPositions = 0;
-                geoms.forEach(g => {
-                  totalPositions += g.getAttribute('position').count;
-                });
+        const colorGroups: Record<string, ClippedPart[]> = {};
+        clippedParts.forEach(part => {
+          if (!colorGroups[part.colorHex]) colorGroups[part.colorHex] = [];
+          colorGroups[part.colorHex].push(part);
+        });
 
-                const mergedPos = new Float32Array(totalPositions * 3);
-                let offset = 0;
-                geoms.forEach(g => {
-                  const pos = g.getAttribute('position');
-                  mergedPos.set(pos.array, offset);
-                  offset += pos.array.length;
-                });
+        for (const [hex, parts] of Object.entries(colorGroups)) {
+          const maxDepth = Math.max(...parts.map(p => p.totalDepth));
+          let geom: THREE.BufferGeometry | null = null;
 
-                const mergedGeo = new THREE.BufferGeometry();
-                mergedGeo.setAttribute('position', new THREE.BufferAttribute(mergedPos, 3));
-                mergedItems.push({
- id: Math.random().toString(36).substring(7),
- geometry: mergedGeo, colorHex: hex, name: `ColorGroup_${hex}` });
-              } catch (err) {
-                console.error("Failed to merge geometries for color", hex, err);
-                geoms.forEach((g, idx) => mergedItems.push({
- id: Math.random().toString(36).substring(7),
- geometry: g, colorHex: hex, name: `ColorGroup_${hex}_${idx}` }));
-              }
+          try {
+            const united = unionMultiPolygons(parts.map(p => p.multiPoly));
+            const shapes = multiPolygonToShapes(united);
+            if (shapes.length > 0) {
+              geom = buildScaledSolid(shapes, maxDepth);
             }
-          });
-        } else {
-          mergedItems = itemsForPlate;
-        }
+          } catch (err) {
+            console.error("Failed to union geometries for color", hex, err);
+          }
 
+          if (!geom) {
+            // Fallback: extrude each part, then buffer-concat
+            const geoms: THREE.BufferGeometry[] = [];
+            for (const part of parts) {
+              const shapes = multiPolygonToShapes(part.multiPoly);
+              if (shapes.length === 0) continue;
+              const g = buildScaledSolid(shapes, part.totalDepth);
+              if (g) geoms.push(g);
+            }
+            if (geoms.length === 0) continue;
+            geom = concatGeometries(geoms);
+          }
+
+          itemsForPlate.push({
+            id: Math.random().toString(36).substring(7),
+            geometry: geom,
+            colorHex: hex,
+            name: `ColorGroup_${hex}`,
+          });
+        }
+      } else {
+        for (const part of clippedParts) {
+          const shapes = multiPolygonToShapes(part.multiPoly);
+          if (shapes.length === 0) continue;
+          const geom = buildScaledSolid(shapes, part.totalDepth);
+          if (!geom) continue;
+          itemsForPlate.push({
+            id: part.id,
+            geometry: geom,
+            colorHex: part.colorHex,
+            name: `Part_${part.id}`,
+          });
+        }
+      }
+
+      if (itemsForPlate.length > 0) {
         plates.push({
-          name: `Plate_R${r + 1}_C${c + 1}`, items: mergedItems, width: buildPlateSize, height: buildPlateSize
+          name: `Plate_R${r + 1}_C${c + 1}`, items: itemsForPlate, width: buildPlateSize, height: buildPlateSize
         });
       }
     }
@@ -312,7 +405,8 @@ export function exportToSTL(
   scene: THREE.Object3D,
   customScale: number,
   scaleZProportionally: boolean,
-  mergeBeforeExport: boolean
+  mergeBeforeExport: boolean,
+  printFaceDown: boolean = false
 ) {
   const exportScene = scene.clone();
 
@@ -349,23 +443,7 @@ export function exportToSTL(
 
         mesh.updateMatrix();
         let geom = mesh.geometry.clone();
-
-        if (geom.index) {
-          geom = geom.toNonIndexed();
-        }
-
-        const attrs = Object.keys(geom.attributes);
-        attrs.forEach(key => {
-          if (key !== 'position' && key !== 'normal' && key !== 'uv') {
-            geom.deleteAttribute(key);
-          }
-        });
-        if (!geom.attributes.normal) geom.computeVertexNormals();
-        if (!geom.attributes.uv) {
-          const count = geom.attributes.position.count;
-          geom.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(count * 2), 2));
-        }
-
+        geom = hardenExportGeometry(geom);
         geom.applyMatrix4(mesh.matrix);
         geometries.push(geom);
         materials.push(mesh.material as THREE.Material);
@@ -374,8 +452,10 @@ export function exportToSTL(
 
     if (geometries.length > 0 && meshesParent) {
       try {
-        const mergedGeometry = BufferGeometryUtils.mergeGeometries(geometries, true);
-        const mergedMesh = new THREE.Mesh(mergedGeometry, materials);
+        let mergedGeometry = BufferGeometryUtils.mergeGeometries(geometries, true);
+        if (printFaceDown) flipFaceDown(mergedGeometry);
+        const hardened = hardenExportGeometry(mergedGeometry);
+        const mergedMesh = new THREE.Mesh(hardened, materials);
 
         const parent = meshesParent as THREE.Object3D;
         parent.clear();
@@ -387,6 +467,15 @@ export function exportToSTL(
         throw e;
       }
     }
+  } else {
+    exportScene.traverse((child) => {
+      if ((child as THREE.Mesh).isMesh) {
+        const mesh = child as THREE.Mesh;
+        let geom = mesh.geometry.clone();
+        if (printFaceDown) flipFaceDown(geom);
+        mesh.geometry = hardenExportGeometry(geom);
+      }
+    });
   }
 
   const exporter = new STLExporter();
@@ -401,4 +490,3 @@ export function exportToSTL(
   link.click();
   document.body.removeChild(link);
 }
-

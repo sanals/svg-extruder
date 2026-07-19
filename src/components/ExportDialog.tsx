@@ -20,6 +20,9 @@ interface ExportDialogProps {
   setClearance: (val: number) => void;
   mergeBeforeExport: boolean;
   setMergeBeforeExport: (val: boolean) => void;
+  printFaceDown: boolean;
+  setPrintFaceDown: (val: boolean) => void;
+  canPrintFaceDown: boolean;
   handleExport3MF: () => void;
   handleExportSTL: () => void;
   svgUrl: string | null;
@@ -42,6 +45,9 @@ export const ExportDialog: React.FC<ExportDialogProps> = ({
   setClearance,
   mergeBeforeExport,
   setMergeBeforeExport,
+  printFaceDown,
+  setPrintFaceDown,
+  canPrintFaceDown,
   handleExport3MF,
   handleExportSTL,
   svgUrl,
@@ -105,6 +111,26 @@ export const ExportDialog: React.FC<ExportDialogProps> = ({
               <input type="checkbox" checked={mergeBeforeExport} onChange={(e) => setMergeBeforeExport(e.target.checked)} />
               Join objects for STL (Single Mesh)
             </label>
+
+            <label className="checkbox-label" style={{ fontSize: '0.75rem', opacity: canPrintFaceDown ? 1 : 0.45, cursor: canPrintFaceDown ? 'pointer' : 'not-allowed' }}>
+              <input
+                type="checkbox"
+                checked={printFaceDown && canPrintFaceDown}
+                disabled={!canPrintFaceDown}
+                onChange={(e) => setPrintFaceDown(e.target.checked)}
+              />
+              Print face down
+            </label>
+            {!canPrintFaceDown && (
+              <span style={{ fontSize: '0.65rem', color: '#94a3b8', marginTop: '-0.25rem', paddingLeft: '1.5rem' }}>
+                Only available when all faces share the same height
+              </span>
+            )}
+
+            <p style={{ fontSize: '0.65rem', color: '#94a3b8', margin: '0.25rem 0 0', lineHeight: 1.4 }}>
+              For cleaner slicer results: keep <strong style={{ color: '#cbd5e1' }}>Cut overlaps</strong> on when loading.
+              Seal Gaps is a preview bevel only and is not applied to 3MF export.
+            </p>
           </div>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', marginTop: '1.5rem' }}>

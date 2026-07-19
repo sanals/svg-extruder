@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import * as THREE from 'three';
 import { type SvgModelRef } from '../components/SvgModel';
 import { useHistory } from './useHistory';
-import { exportToSTL } from '../lib/export-utils';
+import { exportToSTL, areExtrusionHeightsUniform } from '../lib/export-utils';
 import { computeAutoExtrudeDepths, calculateLineArtParams, generateSVGFromShapes, LINE_ART_DEPTH } from '../lib/app-logic';
 import { prepareCanvasForVtracer, quantizePreparedImage, snapSvgColorsToPalette } from '../lib/image-preprocess';
 import { sealAndStraightenSvg } from '../lib/svg-path-cleanup';
@@ -52,10 +52,22 @@ export function useAppController() {
   const [selectSizeThreshold, setSelectSizeThreshold] = useState<number>(0);
   const [shapeAreasCache, setShapeAreasCache] = useState<{ id: string, area: number }[] | null>(null);
   const [mergeBeforeExport, setMergeBeforeExport] = useState<boolean>(false);
+  const [printFaceDown, setPrintFaceDown] = useState<boolean>(false);
 
   const [meshColors, setMeshColors] = useState<{ id: string, colorHex: string }[]>([]);
   const [meshColorOverrides, setMeshColorOverrides] = useState<Record<string, string>>({});
   const [meshDepths, setMeshDepths] = useState<Record<string, number>>({});
+
+  const canPrintFaceDown = areExtrusionHeightsUniform(
+    meshColors.map(m => m.id),
+    meshDepths
+  );
+
+  useEffect(() => {
+    if (!canPrintFaceDown && printFaceDown) {
+      setPrintFaceDown(false);
+    }
+  }, [canPrintFaceDown, printFaceDown]);
 
   const sceneRef = useRef<THREE.Group>(null);
   const svgModelRef = useRef<SvgModelRef>(null);
@@ -272,7 +284,8 @@ export function useAppController() {
     try {
       const zipBlob = await svgModelRef.current.sliceAndExport(
         buildPlateSize, gridSize, printerModel, mergeColors3MF, customScale / 100.0, mergeColors3MF ? 0 : clearance, scaleZProportionally,
-        (msg) => setExportStatus(msg)
+        (msg) => setExportStatus(msg),
+        printFaceDown && canPrintFaceDown
       );
 
       if (zipBlob) {
@@ -298,7 +311,7 @@ export function useAppController() {
   const handleExportSTLAction = () => {
     if (!sceneRef.current) return;
     try {
-      exportToSTL(sceneRef.current, customScale, scaleZProportionally, mergeBeforeExport);
+      exportToSTL(sceneRef.current, customScale, scaleZProportionally, mergeBeforeExport, printFaceDown && canPrintFaceDown);
     } catch (e) {
       alert("Failed to export STL. Check console for details.");
     }
@@ -1138,6 +1151,7 @@ export function useAppController() {
     selectedMeshIds, setSelectedMeshIds, vertexCount, setVertexCount, isTracing, setIsTracing,
     highlightStyle, setHighlightStyle, sealGaps, setSealGaps, backingDepth, setBackingDepth, cutOverlaps, setCutOverlaps,
     selectSizeThreshold, setSelectSizeThreshold, shapeAreasCache, setShapeAreasCache, mergeBeforeExport, setMergeBeforeExport,
+    printFaceDown, setPrintFaceDown, canPrintFaceDown,
     meshColors, setMeshColors, meshColorOverrides, setMeshColorOverrides, meshDepths, setMeshDepths,
     mergeColors3MF, setMergeColors3MF, isMerging, setIsMerging, isFusingSelection, setIsFusingSelection,
     fuseStatus, setFuseStatus, isExtracting, setIsExtracting, extractStatus, setExtractStatus,
