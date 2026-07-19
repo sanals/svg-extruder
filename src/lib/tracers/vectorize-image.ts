@@ -9,12 +9,15 @@ import type { TracerBackend, TraceRequest } from './types';
 export const vectorizeImageBackend: TracerBackend = {
   id: 'vectorize-image',
   label: 'Vectorize Image',
-  description: 'vectorize-image.app style: Logo/Sketch/Photo presets, raw VTracer SVG.',
+  description: 'Website presets (Logo/Sketch/Photo): raw VTracer SVG, no color lock.',
   async trace(request: TraceRequest): Promise<string> {
     return rgbaToVtracerSvg(request.data, request.width, request.height, {
       colorCount: request.colorCount,
       lockPalette: false,
       preset: (request.preset ?? 'logo') as VTracerPreset,
+      viColorPrecision: request.viColorPrecision,
+      viFilterSpeckle: request.viFilterSpeckle,
+      viPathPrecision: request.viPathPrecision,
     });
   },
 };

@@ -39,6 +39,18 @@ function App() {
     handleTracerChange,
     vtracerPreset,
     handleVtracerPresetChange,
+    vtracerFilterSpeckle,
+    handleVtracerFilterSpeckleChange,
+    vtracerColorPrecisionBits,
+    handleVtracerColorPrecisionChange,
+    viColorPrecision,
+    handleViColorPrecisionChange,
+    viFilterSpeckle,
+    handleViFilterSpeckleChange,
+    viPathPrecision,
+    handleViPathPrecisionChange,
+    viMaxColors,
+    handleViMaxColorsChange,
     selectedMeshIds,
     vertexCount,
     isTracing,
@@ -188,6 +200,18 @@ function App() {
           handleTracerChange={handleTracerChange}
           vtracerPreset={vtracerPreset}
           handleVtracerPresetChange={handleVtracerPresetChange}
+          vtracerFilterSpeckle={vtracerFilterSpeckle}
+          handleVtracerFilterSpeckleChange={handleVtracerFilterSpeckleChange}
+          vtracerColorPrecisionBits={vtracerColorPrecisionBits}
+          handleVtracerColorPrecisionChange={handleVtracerColorPrecisionChange}
+          viColorPrecision={viColorPrecision}
+          handleViColorPrecisionChange={handleViColorPrecisionChange}
+          viFilterSpeckle={viFilterSpeckle}
+          handleViFilterSpeckleChange={handleViFilterSpeckleChange}
+          viPathPrecision={viPathPrecision}
+          handleViPathPrecisionChange={handleViPathPrecisionChange}
+          viMaxColors={viMaxColors}
+          handleViMaxColorsChange={handleViMaxColorsChange}
           highlightStyle={highlightStyle}
           setHighlightStyle={setHighlightStyle}
           currentMeshColors={currentMeshColors}

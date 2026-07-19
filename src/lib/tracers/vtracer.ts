@@ -14,6 +14,8 @@ export const vtracerBackend: TracerBackend = {
       colorCount: request.colorCount,
       lockPalette: true,
       preset: request.preset ?? 'logo',
+      filterSpeckle: request.filterSpeckle,
+      colorPrecisionBits: request.colorPrecisionBits,
     });
   },
 };

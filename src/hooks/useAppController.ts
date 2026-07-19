@@ -7,6 +7,7 @@ import { computeAutoExtrudeDepths, calculateLineArtParams, generateSVGFromShapes
 import { prepareCanvasForVtracer, quantizePreparedImage, snapSvgColorsToPalette } from '../lib/image-preprocess';
 import { sealAndStraightenSvg } from '../lib/svg-path-cleanup';
 import { mergeSvgFills, normalizeSvgForPreview } from '../lib/svg-preview';
+import { getWebsitePresetAdvancedDefaults } from '../lib/vtracer-trace';
 import {
   DEFAULT_TRACER_ID,
   isTracerId,
@@ -30,6 +31,16 @@ export function useAppController() {
   const [colorCount, setColorCount] = useState<number>(8);
   const [tracerId, setTracerId] = useState<TracerId>(DEFAULT_TRACER_ID);
   const [vtracerPreset, setVtracerPreset] = useState<VTracerPresetId>('logo');
+  /** Print-path filter_speckle UI (area = n²). Default 12 matches prior hardcoded 144. */
+  const [vtracerFilterSpeckle, setVtracerFilterSpeckle] = useState(12);
+  /** Print-path color precision bits (1–8). 0 = auto from color-count tiers. */
+  const [vtracerColorPrecisionBits, setVtracerColorPrecisionBits] = useState(0);
+  /** Vectorize Image advanced (site UI bits / speck / path). */
+  const [viColorPrecision, setViColorPrecision] = useState(6);
+  const [viFilterSpeckle, setViFilterSpeckle] = useState(4);
+  const [viPathPrecision, setViPathPrecision] = useState(2);
+  /** Cap unique SVG fills after VI trace (snap only; no pre-posterize). */
+  const [viMaxColors, setViMaxColors] = useState(24);
   const [selectedMeshIds, setSelectedMeshIds] = useState<string[]>([]);
 
   const [vertexCount, setVertexCount] = useState<number>(0);
@@ -535,7 +546,15 @@ export function useAppController() {
     colors: number,
     previewDataUrl?: string | null,
     backend: TracerId = tracerId,
-    options?: { preset?: VTracerPresetId },
+    options?: {
+      preset?: VTracerPresetId;
+      filterSpeckle?: number;
+      colorPrecisionBits?: number;
+      viColorPrecision?: number;
+      viFilterSpeckle?: number;
+      viPathPrecision?: number;
+      viMaxColors?: number;
+    },
   ) => {
     // Cache raw RGBA so color slider / preset / backend can re-trace cleanly.
     sourceRgbaRef.current = {
@@ -547,19 +566,29 @@ export function useAppController() {
     const clampedColors = Math.min(64, Math.max(2, Math.round(colors)));
     const websiteMode = isWebsiteTracer(backend);
     const useLock = !websiteMode && backend === 'vtracer';
-    // Limit palette for VTracer print and Vectorize Image (user-controllable max colors).
-    const limitColors = useLock || websiteMode;
     const preset = options?.preset ?? vtracerPreset;
+    const filterSpeckle = options?.filterSpeckle ?? vtracerFilterSpeckle;
+    const colorPrecisionBits =
+      options?.colorPrecisionBits !== undefined
+        ? options.colorPrecisionBits
+        : vtracerColorPrecisionBits;
+    const viColor = options?.viColorPrecision ?? viColorPrecision;
+    const viSpeck = options?.viFilterSpeckle ?? viFilterSpeckle;
+    const viPath = options?.viPathPrecision ?? viPathPrecision;
+    const viMax = Math.min(
+      64,
+      Math.max(2, Math.round(options?.viMaxColors ?? viMaxColors)),
+    );
 
     let traceData: Uint8ClampedArray = rgba.data;
     let palette: Array<{ r: number; g: number; b: number }> = [];
-    if (limitColors) {
-      // Posterize to ≤N. Print path also fringe-snaps on a temp canvas first.
+    if (useLock) {
+      // Print path only: fringe/snap, then posterize to ≤N.
       const canvas = document.createElement('canvas');
       canvas.width = rgba.width;
       canvas.height = rgba.height;
       const ctx = canvas.getContext('2d', { willReadFrequently: true });
-      if (ctx && useLock) {
+      if (ctx) {
         ctx.putImageData(new ImageData(new Uint8ClampedArray(rgba.data), rgba.width, rgba.height), 0, 0);
         try {
           const prepared = prepareCanvasForVtracer(canvas);
@@ -605,17 +634,37 @@ export function useAppController() {
           palette,
           lockPalette: useLock,
           preset,
+          filterSpeckle: useLock ? filterSpeckle : undefined,
+          colorPrecisionBits: useLock && colorPrecisionBits > 0
+            ? colorPrecisionBits
+            : undefined,
+          viColorPrecision: websiteMode ? viColor : undefined,
+          viFilterSpeckle: websiteMode ? viSpeck : undefined,
+          viPathPrecision: websiteMode ? viPath : undefined,
         });
         if (currentTraceId !== traceIdRef.current) return;
 
-        // Seal only on VTracer print. Snap to palette whenever we limited colors
-        // (VI Logo stays unsealed but fill count follows the slider).
+        // Print: seal + snap. VI: keep raw curves, snap fills to ≤viMaxColors (no seal).
         let finalSvg = svgStr;
         if (useLock) {
           finalSvg = sealAndStraightenSvg(svgStr);
-        }
-        if (palette.length > 0) {
-          finalSvg = snapSvgColorsToPalette(finalSvg, palette);
+          if (palette.length > 0) {
+            finalSvg = snapSvgColorsToPalette(finalSvg, palette);
+          }
+        } else if (websiteMode) {
+          try {
+            const { palette: viPalette } = quantizePreparedImage(
+              rgba.data,
+              rgba.width,
+              rgba.height,
+              viMax,
+            );
+            if (viPalette.length > 0) {
+              finalSvg = snapSvgColorsToPalette(svgStr, viPalette);
+            }
+          } catch {
+            // Keep raw SVG if palette build fails.
+          }
         }
         const blob = new Blob([finalSvg], { type: 'image/svg+xml' });
         // Display-only normalize so ImageTracer / viewBox SVGs fill the compare frame.
@@ -702,7 +751,7 @@ export function useAppController() {
             let width = img.width;
             let height = img.height;
             // Vectorize Image keeps more resolution; VTracer print path stays lighter.
-            const maxDim = isWebsiteTracer(tracerId) ? 2000 : 1200;
+            const maxDim = isWebsiteTracer(tracerId) ? 3000 : 2000;
             const wasDownscaled = width > maxDim || height > maxDim;
 
             if (wasDownscaled) {
@@ -726,28 +775,21 @@ export function useAppController() {
               setTimeout(() => {
                 // Always cache raw pixels; VTracer print applies fringe/posterize at trace time.
                 const imageData = ctx.getImageData(0, 0, width, height);
-                if (tracerId === 'vtracer' || tracerId === 'vectorize-image') {
+                if (tracerId === 'vtracer') {
                   try {
                     const { suggestedColorCount } = prepareCanvasForVtracer(canvas);
-                    // VI Logo needs more headroom than print; still far below raw AA hundreds.
-                    const suggested =
-                      tracerId === 'vectorize-image'
-                        ? Math.min(48, Math.max(16, suggestedColorCount * 2))
-                        : suggestedColorCount;
-                    setColorCount(suggested);
+                    setColorCount(suggestedColorCount);
                     traceImage(
                       { data: imageData.data, width, height },
-                      suggested,
+                      suggestedColorCount,
                       previewDataUrl,
                       tracerId,
                       { preset: vtracerPreset },
                     );
                   } catch {
-                    const fallback = tracerId === 'vectorize-image' ? 24 : colorCount;
-                    setColorCount(fallback);
                     traceImage(
                       { data: imageData.data, width, height },
-                      fallback,
+                      colorCount,
                       previewDataUrl,
                       tracerId,
                       { preset: vtracerPreset },
@@ -824,10 +866,49 @@ export function useAppController() {
 
     colorChangeTimeout.current = window.setTimeout(() => {
       const source = sourceRgbaRef.current;
-      if (!source) return;
-      if (tracerId !== 'vtracer' && tracerId !== 'vectorize-image') return;
+      if (!source || tracerId !== 'vtracer') return;
       setIsTracing("Step 3/4: Re-vectorizing with new color count...");
-      traceImage(source, newColors, imageDataUrl, tracerId, { preset: vtracerPreset });
+      traceImage(source, newColors, imageDataUrl, tracerId, {
+        preset: vtracerPreset,
+        filterSpeckle: vtracerFilterSpeckle,
+        colorPrecisionBits: vtracerColorPrecisionBits,
+      });
+    }, 400);
+  };
+
+  const handleVtracerFilterSpeckleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const next = Math.min(20, Math.max(0, parseInt(e.target.value, 10) || 0));
+    setVtracerFilterSpeckle(next);
+    if (colorChangeTimeout.current) {
+      window.clearTimeout(colorChangeTimeout.current);
+    }
+    colorChangeTimeout.current = window.setTimeout(() => {
+      const source = sourceRgbaRef.current;
+      if (!source || tracerId !== 'vtracer') return;
+      setIsTracing("Step 3/4: Re-vectorizing with new print settings...");
+      traceImage(source, colorCount, imageDataUrl, tracerId, {
+        preset: vtracerPreset,
+        filterSpeckle: next,
+        colorPrecisionBits: vtracerColorPrecisionBits,
+      });
+    }, 400);
+  };
+
+  const handleVtracerColorPrecisionChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const next = Math.min(8, Math.max(0, parseInt(e.target.value, 10) || 0));
+    setVtracerColorPrecisionBits(next);
+    if (colorChangeTimeout.current) {
+      window.clearTimeout(colorChangeTimeout.current);
+    }
+    colorChangeTimeout.current = window.setTimeout(() => {
+      const source = sourceRgbaRef.current;
+      if (!source || tracerId !== 'vtracer') return;
+      setIsTracing("Step 3/4: Re-vectorizing with new print settings...");
+      traceImage(source, colorCount, imageDataUrl, tracerId, {
+        preset: vtracerPreset,
+        filterSpeckle: vtracerFilterSpeckle,
+        colorPrecisionBits: next,
+      });
     }, 400);
   };
 
@@ -838,17 +919,89 @@ export function useAppController() {
     if (!source || !imageDataUrl) return;
     const label = listTracerBackends().find((b) => b.id === next)?.label ?? next;
     setIsTracing(`Step 3/4: Re-vectorizing with ${label}...`);
-    traceImage(source, colorCount, imageDataUrl, next, { preset: vtracerPreset });
+    if (isWebsiteTracer(next)) {
+      traceImage(source, colorCount, imageDataUrl, next, {
+        preset: vtracerPreset,
+        viColorPrecision,
+        viFilterSpeckle,
+        viPathPrecision,
+        viMaxColors,
+      });
+    } else {
+      traceImage(source, colorCount, imageDataUrl, next, {
+        preset: vtracerPreset,
+        filterSpeckle: vtracerFilterSpeckle,
+        colorPrecisionBits: vtracerColorPrecisionBits,
+      });
+    }
   };
 
   const handleVtracerPresetChange = (next: VTracerPresetId) => {
     if (next === vtracerPreset) return;
     setVtracerPreset(next);
+    const defaults = getWebsitePresetAdvancedDefaults(next);
+    setViColorPrecision(defaults.colorPrecision);
+    setViFilterSpeckle(defaults.filterSpeckle);
+    setViPathPrecision(defaults.pathPrecision);
+    setViMaxColors(defaults.maxColors);
     if (!isWebsiteTracer(tracerId)) return;
     const source = sourceRgbaRef.current;
     if (!source || !imageDataUrl) return;
     setIsTracing("Step 3/4: Re-vectorizing with new preset...");
-    traceImage(source, colorCount, imageDataUrl, tracerId, { preset: next });
+    traceImage(source, colorCount, imageDataUrl, tracerId, {
+      preset: next,
+      viColorPrecision: defaults.colorPrecision,
+      viFilterSpeckle: defaults.filterSpeckle,
+      viPathPrecision: defaults.pathPrecision,
+      viMaxColors: defaults.maxColors,
+    });
+  };
+
+  const scheduleWebsiteRetrace = (overrides: {
+    viColorPrecision?: number;
+    viFilterSpeckle?: number;
+    viPathPrecision?: number;
+    viMaxColors?: number;
+  }) => {
+    if (colorChangeTimeout.current) {
+      window.clearTimeout(colorChangeTimeout.current);
+    }
+    colorChangeTimeout.current = window.setTimeout(() => {
+      const source = sourceRgbaRef.current;
+      if (!source || !isWebsiteTracer(tracerId)) return;
+      setIsTracing("Step 3/4: Re-vectorizing with advanced settings...");
+      traceImage(source, colorCount, imageDataUrl, tracerId, {
+        preset: vtracerPreset,
+        viColorPrecision: overrides.viColorPrecision ?? viColorPrecision,
+        viFilterSpeckle: overrides.viFilterSpeckle ?? viFilterSpeckle,
+        viPathPrecision: overrides.viPathPrecision ?? viPathPrecision,
+        viMaxColors: overrides.viMaxColors ?? viMaxColors,
+      });
+    }, 400);
+  };
+
+  const handleViColorPrecisionChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const next = Math.min(8, Math.max(1, parseInt(e.target.value, 10) || 1));
+    setViColorPrecision(next);
+    scheduleWebsiteRetrace({ viColorPrecision: next });
+  };
+
+  const handleViFilterSpeckleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const next = Math.min(20, Math.max(0, parseInt(e.target.value, 10) || 0));
+    setViFilterSpeckle(next);
+    scheduleWebsiteRetrace({ viFilterSpeckle: next });
+  };
+
+  const handleViPathPrecisionChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const next = Math.min(8, Math.max(0, parseInt(e.target.value, 10) || 0));
+    setViPathPrecision(next);
+    scheduleWebsiteRetrace({ viPathPrecision: next });
+  };
+
+  const handleViMaxColorsChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const next = Math.min(64, Math.max(2, parseInt(e.target.value, 10) || 2));
+    setViMaxColors(next);
+    scheduleWebsiteRetrace({ viMaxColors: next });
   };
 
   const handlePromoteTo3D = () => {
@@ -974,6 +1127,12 @@ export function useAppController() {
     fitTrigger, setFitTrigger, rawSvgContent, setRawSvgContent, imageDataUrl, setImageDataUrl,
     colorCount, setColorCount, tracerId, setTracerId, handleTracerChange, tracerBackends: listTracerBackends(),
     vtracerPreset, handleVtracerPresetChange,
+    vtracerFilterSpeckle, handleVtracerFilterSpeckleChange,
+    vtracerColorPrecisionBits, handleVtracerColorPrecisionChange,
+    viColorPrecision, handleViColorPrecisionChange,
+    viFilterSpeckle, handleViFilterSpeckleChange,
+    viPathPrecision, handleViPathPrecisionChange,
+    viMaxColors, handleViMaxColorsChange,
     selectedMeshIds, setSelectedMeshIds, vertexCount, setVertexCount, isTracing, setIsTracing,
     highlightStyle, setHighlightStyle, sealGaps, setSealGaps, backingDepth, setBackingDepth, cutOverlaps, setCutOverlaps,
     selectSizeThreshold, setSelectSizeThreshold, shapeAreasCache, setShapeAreasCache, mergeBeforeExport, setMergeBeforeExport,

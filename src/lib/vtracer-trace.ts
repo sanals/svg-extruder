@@ -21,15 +21,42 @@ export interface VTracerTraceOptions {
    * When false (Vectorize Image), use preset knobs like vectorize-image.app.
    */
   lockPalette?: boolean;
+  /** Print-path filter_speckle UI value (area = n²). */
+  filterSpeckle?: number;
+  /** Print-path color_precision UI bits (1–8). Omit for auto tiers from colorCount. */
+  colorPrecisionBits?: number;
+  /** Website-path color_precision UI bits (1–8). */
+  viColorPrecision?: number;
+  /** Website-path filter_speckle UI (n → area n²). */
+  viFilterSpeckle?: number;
+  /** Website-path path_precision (decimal places). */
+  viPathPrecision?: number;
+}
+
+/** Site UI advanced defaults per Logo / Sketch / Photo preset. */
+export function getWebsitePresetAdvancedDefaults(preset: VTracerPreset = 'logo'): {
+  colorPrecision: number;
+  filterSpeckle: number;
+  pathPrecision: number;
+  /** Cap unique SVG fills after snap (print-friendly; not a site control). */
+  maxColors: number;
+} {
+  if (preset === 'sketch') {
+    return { colorPrecision: 1, filterSpeckle: 8, pathPrecision: 2, maxColors: 2 };
+  }
+  if (preset === 'photo') {
+    return { colorPrecision: 8, filterSpeckle: 4, pathPrecision: 2, maxColors: 48 };
+  }
+  return { colorPrecision: 6, filterSpeckle: 4, pathPrecision: 2, maxColors: 24 };
 }
 
 /** Site UI color_precision bits → Runner is_same_color_a loss (cmdapp). */
-function bitsToLoss(bits: number): number {
+export function bitsToLoss(bits: number): number {
   return Math.max(0, Math.min(8, 8 - Math.round(bits)));
 }
 
 /** Site UI filter_speckle → area in px² (cmdapp: n*n). */
-function speckleToArea(n: number): number {
+export function speckleToArea(n: number): number {
   const v = Math.max(0, Math.round(n));
   return v * v;
 }
@@ -58,7 +85,10 @@ function degToRad(deg: number): number {
  * Stronger loss so VTracer does not re-split a single flat into near-shades.
  * (Locked path still uses Runner-style loss values, not webapp UI bits.)
  */
-export function buildVtracerConfig(colorCount: number): VTracerConfig {
+export function buildVtracerConfig(
+  colorCount: number,
+  overrides?: { filterSpeckle?: number; colorPrecisionBits?: number },
+): VTracerConfig {
   const colors = Math.max(2, Math.min(64, Math.round(colorCount)));
   let colorPrecision: number;
   let layerDifference: number;
@@ -79,6 +109,15 @@ export function buildVtracerConfig(colorCount: number): VTracerConfig {
     layerDifference = 16;
   }
 
+  if (overrides?.colorPrecisionBits != null && overrides.colorPrecisionBits > 0) {
+    colorPrecision = bitsToLoss(overrides.colorPrecisionBits);
+  }
+
+  const filterSpeckle =
+    overrides?.filterSpeckle != null
+      ? speckleToArea(overrides.filterSpeckle)
+      : 12 * 12;
+
   return {
     binary: false,
     mode: 'spline',
@@ -87,7 +126,7 @@ export function buildVtracerConfig(colorCount: number): VTracerConfig {
     lengthThreshold: 3,
     maxIterations: 10,
     spliceThreshold: degToRad(30),
-    filterSpeckle: 12 * 12,
+    filterSpeckle,
     colorPrecision,
     layerDifference,
     pathPrecision: 3,
@@ -100,7 +139,19 @@ export function buildVtracerConfig(colorCount: number): VTracerConfig {
  * Logo advanced: color 6 → loss 2, speck 4 → area 16, path 2.
  * Curve defaults from visioncortex demo: corner 60°, length 4, splice 45°.
  */
-export function buildVtracerPresetConfig(preset: VTracerPreset = 'logo'): VTracerConfig {
+export function buildVtracerPresetConfig(
+  preset: VTracerPreset = 'logo',
+  overrides?: {
+    colorPrecision?: number;
+    filterSpeckle?: number;
+    pathPrecision?: number;
+  },
+): VTracerConfig {
+  const defaults = getWebsitePresetAdvancedDefaults(preset);
+  const colorBits = overrides?.colorPrecision ?? defaults.colorPrecision;
+  const speck = overrides?.filterSpeckle ?? defaults.filterSpeckle;
+  const pathPrec = overrides?.pathPrecision ?? defaults.pathPrecision;
+
   const base: VTracerConfig = {
     binary: false,
     mode: 'spline',
@@ -109,30 +160,24 @@ export function buildVtracerPresetConfig(preset: VTracerPreset = 'logo'): VTrace
     lengthThreshold: 4,
     maxIterations: 10,
     spliceThreshold: degToRad(45),
-    filterSpeckle: speckleToArea(4),
-    colorPrecision: bitsToLoss(6),
+    filterSpeckle: speckleToArea(speck),
+    colorPrecision: bitsToLoss(colorBits),
     layerDifference: 16,
-    pathPrecision: 2,
+    pathPrecision: pathPrec,
   };
 
   if (preset === 'sketch') {
     return {
       ...base,
       binary: true,
-      colorPrecision: bitsToLoss(1),
       layerDifference: 32,
-      filterSpeckle: speckleToArea(8),
-      pathPrecision: 2,
     };
   }
 
   if (preset === 'photo') {
     return {
       ...base,
-      colorPrecision: bitsToLoss(8),
       layerDifference: 8,
-      filterSpeckle: speckleToArea(4),
-      pathPrecision: 2,
     };
   }
 
@@ -142,9 +187,16 @@ export function buildVtracerPresetConfig(preset: VTracerPreset = 'logo'): VTrace
 
 export function resolveVtracerConfig(options: VTracerTraceOptions = {}): VTracerConfig {
   if (options.lockPalette === false) {
-    return buildVtracerPresetConfig(options.preset ?? 'logo');
+    return buildVtracerPresetConfig(options.preset ?? 'logo', {
+      colorPrecision: options.viColorPrecision,
+      filterSpeckle: options.viFilterSpeckle,
+      pathPrecision: options.viPathPrecision,
+    });
   }
-  return buildVtracerConfig(options.colorCount ?? 16);
+  return buildVtracerConfig(options.colorCount ?? 16, {
+    filterSpeckle: options.filterSpeckle,
+    colorPrecisionBits: options.colorPrecisionBits,
+  });
 }
 
 let worker: Worker | null = null;

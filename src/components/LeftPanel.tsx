@@ -26,6 +26,18 @@ export interface LeftPanelProps {
   handleTracerChange: (id: string) => void;
   vtracerPreset: 'logo' | 'sketch' | 'photo';
   handleVtracerPresetChange: (preset: 'logo' | 'sketch' | 'photo') => void;
+  vtracerFilterSpeckle: number;
+  handleVtracerFilterSpeckleChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  vtracerColorPrecisionBits: number;
+  handleVtracerColorPrecisionChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  viColorPrecision: number;
+  handleViColorPrecisionChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  viFilterSpeckle: number;
+  handleViFilterSpeckleChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  viPathPrecision: number;
+  handleViPathPrecisionChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  viMaxColors: number;
+  handleViMaxColorsChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
   highlightStyle: 'dashed' | 'solid';
   setHighlightStyle: (style: 'dashed' | 'solid') => void;
   currentMeshColors: { id: string; colorHex: string }[];
@@ -54,6 +66,12 @@ export const LeftPanel: React.FC<LeftPanelProps> = (props) => {
     generateSVGFromCurrentShapes, uniqueColors, handleAutoExtrude, handleConvertToLineArt,
     imageDataUrl, colorCount, handleColorCountChange, tracerId, tracerBackends, handleTracerChange,
     vtracerPreset, handleVtracerPresetChange,
+    vtracerFilterSpeckle, handleVtracerFilterSpeckleChange,
+    vtracerColorPrecisionBits, handleVtracerColorPrecisionChange,
+    viColorPrecision, handleViColorPrecisionChange,
+    viFilterSpeckle, handleViFilterSpeckleChange,
+    viPathPrecision, handleViPathPrecisionChange,
+    viMaxColors, handleViMaxColorsChange,
     highlightStyle, setHighlightStyle,
     currentMeshColors, selectedMeshIds, setSelectedMeshIds, selectedUniqueColors,
     isMerging, handleAutoSelectSimilar, toggleColorSelection, initiateFuse,
@@ -386,7 +404,7 @@ export const LeftPanel: React.FC<LeftPanelProps> = (props) => {
               {tracerId === 'vectorize-image' && (
                 <div style={{ marginBottom: '0.5rem' }}>
                   <div style={{ fontSize: '0.75rem', color: '#94a3b8', marginBottom: '0.25rem' }}>
-                    Preset
+                    Preset (website-style)
                   </div>
                   <div className="segmented-control">
                     {([
@@ -405,16 +423,102 @@ export const LeftPanel: React.FC<LeftPanelProps> = (props) => {
                       </label>
                     ))}
                   </div>
+                  <div style={{ fontSize: '0.7rem', color: '#64748b', margin: '0.65rem 0 0.35rem' }}>
+                    Advanced — fine-tune if too noisy, flat, or large
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', color: '#94a3b8', marginBottom: '0.25rem' }}>
+                    <label htmlFor="vi-max-colors">Max colors</label>
+                    <span>{viMaxColors} max</span>
+                  </div>
+                  <HoverSlider
+                    id="vi-max-colors"
+                    min={2}
+                    max={64}
+                    step={1}
+                    value={viMaxColors}
+                    onChange={handleViMaxColorsChange}
+                    displayFormat={(v: number) => Math.round(v).toString()}
+                  />
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', color: '#94a3b8', margin: '0.5rem 0 0.25rem' }}>
+                    <label htmlFor="vi-color-precision">Color precision</label>
+                    <span>{viColorPrecision}</span>
+                  </div>
+                  <HoverSlider
+                    id="vi-color-precision"
+                    min={1}
+                    max={8}
+                    step={1}
+                    value={viColorPrecision}
+                    onChange={handleViColorPrecisionChange}
+                    displayFormat={(v: number) => Math.round(v).toString()}
+                  />
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', color: '#94a3b8', margin: '0.5rem 0 0.25rem' }}>
+                    <label htmlFor="vi-filter-speckle">Speckle filter</label>
+                    <span>{viFilterSpeckle}</span>
+                  </div>
+                  <HoverSlider
+                    id="vi-filter-speckle"
+                    min={0}
+                    max={20}
+                    step={1}
+                    value={viFilterSpeckle}
+                    onChange={handleViFilterSpeckleChange}
+                    displayFormat={(v: number) => Math.round(v).toString()}
+                  />
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', color: '#94a3b8', margin: '0.5rem 0 0.25rem' }}>
+                    <label htmlFor="vi-path-precision">Path precision</label>
+                    <span>{viPathPrecision}</span>
+                  </div>
+                  <HoverSlider
+                    id="vi-path-precision"
+                    min={0}
+                    max={8}
+                    step={1}
+                    value={viPathPrecision}
+                    onChange={handleViPathPrecisionChange}
+                    displayFormat={(v: number) => Math.round(v).toString()}
+                  />
                 </div>
               )}
 
-              {(tracerId === 'vtracer' || tracerId === 'vectorize-image') && (
+              {tracerId === 'vtracer' && (
                 <>
+                  <div style={{ fontSize: '0.7rem', color: '#64748b', marginBottom: '0.5rem' }}>
+                    Print path — limited colors + sealed seams
+                  </div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', color: '#94a3b8', marginBottom: '0.25rem' }}>
                     <label htmlFor="color-count">Image Colors To Extract</label>
                     <span>{colorCount} max</span>
                   </div>
                   <HoverSlider id="color-count" min={2} max={64} step={1} value={colorCount} onChange={handleColorCountChange} displayFormat={(v: number) => Math.round(v).toString()} />
+
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', color: '#94a3b8', margin: '0.5rem 0 0.25rem' }}>
+                    <label htmlFor="filter-speckle">Filter Speckle</label>
+                    <span>{vtracerFilterSpeckle}</span>
+                  </div>
+                  <HoverSlider
+                    id="filter-speckle"
+                    min={0}
+                    max={20}
+                    step={1}
+                    value={vtracerFilterSpeckle}
+                    onChange={handleVtracerFilterSpeckleChange}
+                    displayFormat={(v: number) => Math.round(v).toString()}
+                  />
+
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', color: '#94a3b8', margin: '0.5rem 0 0.25rem' }}>
+                    <label htmlFor="color-precision">Color Detail</label>
+                    <span>{vtracerColorPrecisionBits === 0 ? 'Auto' : `${vtracerColorPrecisionBits} bits`}</span>
+                  </div>
+                  <HoverSlider
+                    id="color-precision"
+                    min={0}
+                    max={8}
+                    step={1}
+                    value={vtracerColorPrecisionBits}
+                    onChange={handleVtracerColorPrecisionChange}
+                    displayFormat={(v: number) => (Math.round(v) === 0 ? 'Auto' : Math.round(v).toString())}
+                  />
                 </>
               )}
             </div>

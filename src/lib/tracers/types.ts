@@ -28,6 +28,16 @@ export interface TraceRequest {
   lockPalette?: boolean;
   /** VTracer website-style preset (ignored by ImageTracer). */
   preset?: VTracerPresetId;
+  /** Print-path filter_speckle UI (n → area n²). */
+  filterSpeckle?: number;
+  /** Print-path color_precision bits (1–8). Omit / 0 = auto tiers. */
+  colorPrecisionBits?: number;
+  /** Website-path advanced: color_precision bits (1–8). */
+  viColorPrecision?: number;
+  /** Website-path advanced: filter_speckle UI (n → area n²). */
+  viFilterSpeckle?: number;
+  /** Website-path advanced: path_precision. */
+  viPathPrecision?: number;
 }
 
 export interface TracerBackend {
