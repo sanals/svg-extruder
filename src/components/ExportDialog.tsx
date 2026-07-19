@@ -24,6 +24,12 @@ interface ExportDialogProps {
   printFaceDown: boolean;
   setPrintFaceDown: (val: boolean) => void;
   canPrintFaceDown: boolean;
+  colorOnFaceOnly: boolean;
+  setColorOnFaceOnly: (val: boolean) => void;
+  faceColorDepthMm: number;
+  setFaceColorDepthMm: (val: number) => void;
+  faceBaseColorHex: string;
+  setFaceBaseColorHex: (val: string) => void;
   thinWallParts: ThinWallPart[];
   handleSelectThinParts: () => void;
   handleExport3MF: () => void;
@@ -51,6 +57,12 @@ export const ExportDialog: React.FC<ExportDialogProps> = ({
   printFaceDown,
   setPrintFaceDown,
   canPrintFaceDown,
+  colorOnFaceOnly,
+  setColorOnFaceOnly,
+  faceColorDepthMm,
+  setFaceColorDepthMm,
+  faceBaseColorHex,
+  setFaceBaseColorHex,
   thinWallParts,
   handleSelectThinParts,
   handleExport3MF,
@@ -59,6 +71,7 @@ export const ExportDialog: React.FC<ExportDialogProps> = ({
   exportStatus
 }) => {
   const clearanceActive = !mergeColors3MF;
+  const FACE_DEPTH_PRESETS = [0.08, 0.2, 0.4, 1.0];
 
   return (
     <div className="export-popup-overlay" style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.5)', zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', backdropFilter: 'blur(3px)' }} onClick={(e) => { if (e.target === e.currentTarget) setShowExportOptions(false); }}>
@@ -165,9 +178,78 @@ export const ExportDialog: React.FC<ExportDialogProps> = ({
               </span>
             )}
 
+            <label className="checkbox-label" style={{ fontSize: '0.75rem' }}>
+              <input type="checkbox" checked={colorOnFaceOnly} onChange={(e) => setColorOnFaceOnly(e.target.checked)} />
+              Color on face only (3MF)
+            </label>
+
+            {colorOnFaceOnly && (
+              <div style={{ paddingLeft: '1.5rem', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                <div>
+                  <label className="checkbox-label" style={{ fontSize: '0.7rem', marginBottom: '0.25rem', color: '#94a3b8' }}>
+                    Face color depth (mm)
+                  </label>
+                  <div style={{ display: 'flex', gap: '0.35rem', flexWrap: 'wrap', marginBottom: '0.35rem' }}>
+                    {FACE_DEPTH_PRESETS.map(p => (
+                      <button
+                        key={p}
+                        type="button"
+                        onClick={() => setFaceColorDepthMm(p)}
+                        style={{
+                          fontSize: '0.65rem',
+                          padding: '2px 6px',
+                          borderRadius: '4px',
+                          border: `1px solid ${Math.abs(faceColorDepthMm - p) < 1e-6 ? '#ec4899' : '#475569'}`,
+                          background: Math.abs(faceColorDepthMm - p) < 1e-6 ? 'rgba(236,72,153,0.2)' : 'transparent',
+                          color: '#e2e8f0',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        {p}
+                      </button>
+                    ))}
+                  </div>
+                  <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                    <div style={{ flex: 1 }}>
+                      <HoverSlider
+                        min={0.02}
+                        max={1}
+                        step={0.02}
+                        value={faceColorDepthMm}
+                        onChange={(e: any) => setFaceColorDepthMm(Number(e.target.value))}
+                        displayFormat={(v: number) => v.toFixed(2)}
+                      />
+                    </div>
+                    <span style={{ fontSize: '0.75rem', width: '44px', color: 'white', textAlign: 'right' }}>{faceColorDepthMm.toFixed(2)}</span>
+                  </div>
+                  {faceColorDepthMm < 0.08 && (
+                    <div style={{ fontSize: '0.65rem', color: '#fbbf24', marginTop: '0.25rem' }}>
+                      Below typical layer height — the slicer will quantize to its layer height.
+                    </div>
+                  )}
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <label className="checkbox-label" style={{ fontSize: '0.7rem', color: '#94a3b8', margin: 0 }}>Base filament</label>
+                  <input
+                    type="color"
+                    value={`#${faceBaseColorHex.replace('#', '')}`}
+                    onChange={(e) => setFaceBaseColorHex(e.target.value.replace('#', '').toLowerCase())}
+                    style={{ width: '28px', height: '28px', border: 'none', padding: 0, background: 'transparent', cursor: 'pointer' }}
+                    title="Color for the body under the face"
+                  />
+                </div>
+                <p style={{ fontSize: '0.65rem', color: '#94a3b8', margin: 0, lineHeight: 1.35 }}>
+                  Builds one shared base solid plus thin face shells per color (saves AMS filament).
+                  Keep <strong style={{ color: '#cbd5e1' }}>Cut overlaps</strong> on when loading so face shells do not overlap in XY.
+                  Use with Print face down so color prints on the bed.
+                </p>
+              </div>
+            )}
+
             <p style={{ fontSize: '0.65rem', color: '#94a3b8', margin: '0.25rem 0 0', lineHeight: 1.4 }}>
               For cleaner slicer results: keep <strong style={{ color: '#cbd5e1' }}>Cut overlaps</strong> on when loading.
               Seal Gaps is a preview bevel only and is not applied to 3MF export.
+              Face-only color applies to 3MF, not STL.
             </p>
           </div>
 
