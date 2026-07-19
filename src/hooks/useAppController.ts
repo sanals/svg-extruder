@@ -3,6 +3,12 @@ import * as THREE from 'three';
 import { type SvgModelRef } from '../components/SvgModel';
 import { useHistory } from './useHistory';
 import { exportToSTL, areExtrusionHeightsUniform } from '../lib/export-utils';
+import {
+  estimateExportScaleFactor,
+  findThinWallParts,
+  THIN_WALL_THRESHOLD_MM,
+  type ThinWallPart,
+} from '../lib/thin-wall-check';
 import { computeAutoExtrudeDepths, calculateLineArtParams, generateSVGFromShapes, LINE_ART_DEPTH } from '../lib/app-logic';
 import { prepareCanvasForVtracer, quantizePreparedImage, snapSvgColorsToPalette } from '../lib/image-preprocess';
 import { sealAndStraightenSvg } from '../lib/svg-path-cleanup';
@@ -121,6 +127,7 @@ export function useAppController() {
   const [isBasePlating, setIsBasePlating] = useState(false);
   const [basePlateStatus, setBasePlateStatus] = useState<string | null>(null);
   const [showExportOptions, setShowExportOptions] = useState(false);
+  const [thinWallParts, setThinWallParts] = useState<ThinWallPart[]>([]);
 
   const [printerProfile, setPrinterProfile] = useState<'A1 Mini (180x180)' | 'X1/P1/A1 (256x256)'>('X1/P1/A1 (256x256)');
   const [gridSize, setGridSize] = useState<string>("auto");
@@ -130,6 +137,50 @@ export function useAppController() {
   const [customScale, setCustomScale] = useState<number>(100);
   const [scaleZProportionally, setScaleZProportionally] = useState<boolean>(false);
   const [clearance, setClearance] = useState<number>(0.0);
+
+  useEffect(() => {
+    if (!showExportOptions) {
+      setThinWallParts([]);
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      const shapes = svgModelRef.current?.getShapes() ?? [];
+      if (shapes.length === 0) {
+        setThinWallParts([]);
+        return;
+      }
+      const scaleFactor = estimateExportScaleFactor({
+        shapes,
+        buildPlateSize,
+        gridSize,
+        customScale: customScale / 100.0,
+      });
+      const effectiveClearance = mergeColors3MF ? 0 : clearance;
+      const thin = findThinWallParts(shapes, {
+        scaleFactor,
+        clearanceMm: effectiveClearance,
+        thresholdMm: THIN_WALL_THRESHOLD_MM,
+      });
+      setThinWallParts(thin);
+    }, 150);
+
+    return () => window.clearTimeout(timer);
+  }, [
+    showExportOptions,
+    buildPlateSize,
+    gridSize,
+    customScale,
+    clearance,
+    mergeColors3MF,
+    meshColors,
+    meshDepths,
+  ]);
+
+  const handleSelectThinParts = useCallback(() => {
+    if (thinWallParts.length === 0) return;
+    setSelectedMeshIds(thinWallParts.map(p => p.id));
+  }, [thinWallParts]);
 
   const colorChangeTimeout = useRef<number | null>(null);
   const traceIdRef = useRef<number>(0);
@@ -856,13 +907,17 @@ export function useAppController() {
 
   const handleCustomColorChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (selectedMeshIds.length === 0) return;
-    pushToHistory();
-    const newColorHex = e.target.value.replace('#', '');
+    const newColorHex = e.target.value.replace('#', '').toLowerCase();
     setMeshColorOverrides(prev => {
       const next = { ...prev };
-      selectedMeshIds.forEach(id => next[id] = newColorHex);
+      selectedMeshIds.forEach(id => { next[id] = newColorHex; });
       return next;
     });
+  };
+
+  const handleCustomColorPointerDown = () => {
+    if (selectedMeshIds.length === 0) return;
+    pushToHistory();
   };
 
   const previewMeshIds = pendingShards
@@ -1156,6 +1211,7 @@ export function useAppController() {
     mergeColors3MF, setMergeColors3MF, isMerging, setIsMerging, isFusingSelection, setIsFusingSelection,
     fuseStatus, setFuseStatus, isExtracting, setIsExtracting, extractStatus, setExtractStatus,
     isBasePlating, setIsBasePlating, basePlateStatus, setBasePlateStatus, showExportOptions, setShowExportOptions,
+    thinWallParts, handleSelectThinParts,
     printerProfile, setPrinterProfile, gridSize, setGridSize, exportStatus, setExportStatus,
     customScale, setCustomScale, scaleZProportionally, setScaleZProportionally, clearance, setClearance,
     sceneRef, svgModelRef, pushToHistory, handleUndo, handleRedo, canUndo, canRedo, clearHistory,
@@ -1173,7 +1229,7 @@ export function useAppController() {
     handleSplitDisjoint, handleExtractInner, handleCreateBasePlate, inheritProperties,
     handleExpandSelected, handleSmoothSelected, handleCreateBorder, traceImage,
     handleFileUpload, handleDepthChange, handleDepthPointerDown, handleDeleteSelected,
-    handleCustomColorChange, previewMeshIds, handleColorCountChange, handleSelectBySizeChange,
+    handleCustomColorChange, handleCustomColorPointerDown, previewMeshIds, handleColorCountChange, handleSelectBySizeChange,
     currentDepth, shardSizeSlider, colorChangeTimeout
   };
 }

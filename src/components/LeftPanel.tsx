@@ -57,6 +57,7 @@ export interface LeftPanelProps {
   executeFuse: (colorHex: string) => void;
   setIsFusingSelection: (v: boolean) => void;
   handleCustomColorChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  handleCustomColorPointerDown: () => void;
   setMeshColorOverrides: React.Dispatch<React.SetStateAction<Record<string, string>>>;
   pushToHistory: () => void;
 }
@@ -79,7 +80,7 @@ export const LeftPanel: React.FC<LeftPanelProps> = (props) => {
     currentMeshColors, selectedMeshIds, setSelectedMeshIds, selectedUniqueColors,
     isMerging, handleAutoSelectSimilar, toggleColorSelection, initiateFuse,
     isFusingSelection, setIsMerging, executeMergeColors, removeColorFromSelection,
-    executeFuse, setIsFusingSelection, handleCustomColorChange, setMeshColorOverrides, pushToHistory
+    executeFuse, setIsFusingSelection, handleCustomColorChange, handleCustomColorPointerDown, setMeshColorOverrides, pushToHistory
   } = props;
 
   const svgStageColors = useMemo(
@@ -705,10 +706,10 @@ export const LeftPanel: React.FC<LeftPanelProps> = (props) => {
                 <input
                   type="color"
                   value={`#${selectedUniqueColors.length === 1 ? selectedUniqueColors[0] : 'ffffff'}`}
-                  onBlur={handleCustomColorChange}
-                  onChange={() => { }}
+                  onPointerDown={handleCustomColorPointerDown}
+                  onChange={handleCustomColorChange}
                   style={{ width: '32px', height: '32px', border: 'none', padding: 0, background: 'transparent', cursor: 'pointer' }}
-                  title="Pick a custom color (applies when picker is closed)"
+                  title="Pick a custom color"
                 />
                 <div style={{ flex: 1, display: 'flex', gap: '4px', overflowX: 'auto', padding: '2px 0' }}>
                   {uniqueColors.slice(0, 10).map(colorHex => (

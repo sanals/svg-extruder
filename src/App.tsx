@@ -79,6 +79,7 @@ function App() {
     customScale,
     scaleZProportionally,
     clearance,
+    thinWallParts,
     pendingShards,
     ignoredShardColors,
     isAbsorbingShards,
@@ -103,6 +104,7 @@ function App() {
     initiateFuse,
     executeMergeColors,
     handleExportSTLAction,
+    handleSelectThinParts,
     generateSVGFromCurrentShapes,
     handleSaveProject,
     handleLoadProject,
@@ -110,6 +112,7 @@ function App() {
     handleDepthChange,
     handleDepthPointerDown,
     handleCustomColorChange,
+    handleCustomColorPointerDown,
     handleColorCountChange,
     handleSelectBySizeChange,
     sceneRef,
@@ -236,6 +239,7 @@ function App() {
           executeFuse={executeFuse}
           setIsFusingSelection={setIsFusingSelection}
           handleCustomColorChange={handleCustomColorChange}
+          handleCustomColorPointerDown={handleCustomColorPointerDown}
           setMeshColorOverrides={setMeshColorOverrides}
           pushToHistory={pushToHistory}
         />
@@ -393,6 +397,8 @@ function App() {
           printFaceDown={printFaceDown}
           setPrintFaceDown={setPrintFaceDown}
           canPrintFaceDown={canPrintFaceDown}
+          thinWallParts={thinWallParts}
+          handleSelectThinParts={handleSelectThinParts}
           handleExport3MF={handleExport3MF}
           handleExportSTL={handleExportSTLAction}
           svgUrl={svgUrl}
