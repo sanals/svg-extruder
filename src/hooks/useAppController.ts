@@ -4,7 +4,7 @@ import { type SvgModelRef } from '../components/SvgModel';
 import { useHistory } from './useHistory';
 import { exportToSTL } from '../lib/export-utils';
 import { computeAutoExtrudeDepths, calculateLineArtParams, generateSVGFromShapes } from '../lib/app-logic';
-import { prepareCanvasForVtracer } from '../lib/image-preprocess';
+import { prepareCanvasForVtracer, quantizePreparedImage, snapSvgColorsToPalette } from '../lib/image-preprocess';
 import { sealAndStraightenSvg } from '../lib/svg-path-cleanup';
 import { rgbaToVtracerSvg } from '../lib/vtracer-trace';
 
@@ -295,7 +295,7 @@ export function useAppController() {
         setIsTracing("Loading Project...");
         setTimeout(() => {
           setRawSvgContent(projectData.rawSvgContent); setSvgUrl(svgBlobUrl);
-          setColorCount(projectData.colorCount || 8); setMeshDepths(projectData.meshDepths || {});
+          setColorCount(Math.min(64, Math.max(2, projectData.colorCount || 8))); setMeshDepths(projectData.meshDepths || {});
           setMeshColorOverrides(projectData.meshColorOverrides || {}); setSelectedMeshIds(projectData.selectedMeshIds || []);
           setHighlightStyle(projectData.highlightStyle || 'dashed'); setSealGaps(projectData.sealGaps ?? true);
           setBackingDepth(projectData.backingDepth ?? 2);
@@ -496,29 +496,40 @@ export function useAppController() {
     colors: number,
     previewDataUrl?: string | null,
   ) => {
+    // Cache pre-quantize RGBA so the color slider can re-posterize cleanly.
     sourceRgbaRef.current = {
       data: new Uint8ClampedArray(rgba.data),
       width: rgba.width,
       height: rgba.height,
     };
 
+    const clampedColors = Math.min(64, Math.max(2, Math.round(colors)));
+    const { data: quantized, palette } = quantizePreparedImage(
+      rgba.data,
+      rgba.width,
+      rgba.height,
+      clampedColors,
+    );
+
     const currentTraceId = ++traceIdRef.current;
     setIsTracing("Step 3/4: Vectorizing Pixels to SVG...");
     // Yield so the status label paints, then run VTracer in a worker.
     setTimeout(async () => {
       try {
-        const svgStr = await rgbaToVtracerSvg(rgba.data, rgba.width, rgba.height, {
-          colorCount: colors,
+        const svgStr = await rgbaToVtracerSvg(quantized, rgba.width, rgba.height, {
+          colorCount: clampedColors,
         });
         if (currentTraceId !== traceIdRef.current) return;
 
         // Absorb edge crumbs / seal abutting seams (never Clipper-rebuild curves).
         const cleanedSvg = sealAndStraightenSvg(svgStr);
-        const blob = new Blob([cleanedSvg], { type: 'image/svg+xml' });
+        // Lock fills/strokes to the posterize palette so unique mesh colors ≤ slider.
+        const paletteLockedSvg = snapSvgColorsToPalette(cleanedSvg, palette);
+        const blob = new Blob([paletteLockedSvg], { type: 'image/svg+xml' });
         const svgBlobUrl = URL.createObjectURL(blob);
 
         setIsTracing("Step 4/4: Parsing 2D Geometry...");
-        setRawSvgContent(cleanedSvg);
+        setRawSvgContent(paletteLockedSvg);
         setSvgUrl(svgBlobUrl);
         setSelectedMeshIds([]);
         setMeshDepths({});
@@ -662,7 +673,7 @@ export function useAppController() {
     : [];
 
   const handleColorCountChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const newColors = parseInt(e.target.value);
+    const newColors = Math.min(64, Math.max(2, parseInt(e.target.value, 10) || 2));
     setColorCount(newColors);
 
     if (colorChangeTimeout.current) {
@@ -672,7 +683,7 @@ export function useAppController() {
     colorChangeTimeout.current = window.setTimeout(() => {
       const source = sourceRgbaRef.current;
       if (!source) return;
-      // Re-trace only — VTracer re-clusters from the cached RGBA + new color hint.
+      // Re-posterize cached RGBA to N, then re-trace.
       setIsTracing("Step 3/4: Re-vectorizing with new color count...");
       traceImage(source, newColors, imageDataUrl);
     }, 400);

@@ -158,9 +158,9 @@ export const LeftPanel: React.FC<LeftPanelProps> = (props) => {
             <div style={{ marginTop: '0.5rem' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', color: '#94a3b8', marginBottom: '0.25rem' }}>
                 <label htmlFor="color-count">Image Colors To Extract</label>
-                <span>{colorCount}</span>
+                <span>{colorCount} max</span>
               </div>
-              <HoverSlider id="color-count" min={2} max={256} step={1} value={colorCount} onChange={handleColorCountChange} displayFormat={(v: number) => Math.round(v).toString()} />
+              <HoverSlider id="color-count" min={2} max={64} step={1} value={colorCount} onChange={handleColorCountChange} displayFormat={(v: number) => Math.round(v).toString()} />
             </div>
           )}
         </div>

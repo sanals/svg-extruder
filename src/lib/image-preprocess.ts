@@ -27,11 +27,16 @@ interface Lab {
 
 const MIN_COLOR_COUNT = 2;
 const MAX_COLOR_COUNT = 64;
-/** Default cap — headroom for complex flat art (Chat-Large ~20–28 colors). */
-const DEFAULT_MAX_CONTENT_COLORS = 28;
+/** Cap for auto-suggested slider value (flat art rarely needs more). */
+const DEFAULT_MAX_CONTENT_COLORS = 16;
 const MEDIAN_CUT_TARGET = 32;
 /** Only merge very close fringe colors; intentional two-tones (two greens/pinks) stay. */
 const MERGE_DELTA_E = 9;
+/**
+ * Stronger merge for VTracer posterize so near-shades of one flat fill
+ * collapse into a single palette entry (fixes green/pink over-split).
+ */
+const CONTENT_MERGE_DELTA_E = 16;
 const BACKGROUND_SEED_TOLERANCE = 18;
 const MAX_SAMPLE_PIXELS = 20000;
 const WHITE: Rgb = { r: 255, g: 255, b: 255 };
@@ -1074,16 +1079,19 @@ export interface PreprocessOptions {
 }
 
 export interface VtracerPrepareResult {
-  /** Pixel buffer ready for VTracer (no PNG roundtrip). */
+  /**
+   * Pixel buffer after fringe cleanup + boundary snap, before palette posterize.
+   * Cache this and call quantizePreparedImage per colorCount before tracing.
+   */
   imageData: ImageData;
-  /** Hint for the UI color slider / VTracer colorPrecision mapping. */
+  /** Hint for the UI color slider from merged palette size. */
   suggestedColorCount: number;
 }
 
 /**
- * Light prep for VTracer: ImageData out, no morph/quantize warpath.
- * VTracer owns clustering; we dissolve AA fringe and snap midtone joins
- * onto the two abutting flats so shared edges are cleaner.
+ * Light prep for VTracer: fringe despeckle + boundary snap only.
+ * Palette posterize happens later via quantizePreparedImage so the color
+ * slider can re-quantize from the same cache without reloading the image.
  */
 export function prepareCanvasForVtracer(canvas: HTMLCanvasElement): VtracerPrepareResult {
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
@@ -1097,12 +1105,202 @@ export function prepareCanvasForVtracer(canvas: HTMLCanvasElement): VtracerPrepa
   // Empty mask = treat every opaque pixel as content (no background skip).
   const bgMask = new Uint8Array(width * height);
   snapTwoColorBoundaries(imageData.data, width, height, bgMask);
-  const suggestedColorCount = estimateDistinctColorCount(imageData.data, width, height);
+  const suggestedColorCount = suggestColorCountFromPalette(
+    imageData.data,
+    width,
+    height,
+  );
 
   return {
     imageData,
     suggestedColorCount,
   };
+}
+
+/**
+ * Posterize prepared RGBA to at most `maxColors` flat palette entries.
+ * Returns a new buffer + the palette used (for snapping SVG fills to match the slider).
+ */
+export interface QuantizePreparedResult {
+  data: Uint8ClampedArray;
+  palette: Array<{ r: number; g: number; b: number }>;
+}
+
+export function quantizePreparedImage(
+  data: Uint8ClampedArray,
+  width: number,
+  height: number,
+  maxColors: number,
+): QuantizePreparedResult {
+  const n = Math.min(
+    MAX_COLOR_COUNT,
+    Math.max(MIN_COLOR_COUNT, Math.round(maxColors)),
+  );
+  const out = new Uint8ClampedArray(data);
+  const palette = buildContentPalette(out, width, height, n);
+  quantizeOpaqueToPalette(out, width, height, palette);
+  return { data: out, palette };
+}
+
+/** Hex string without `#` (matches mesh colorHex). */
+export function rgbToHex6(color: Rgb): string {
+  return ((1 << 24) | (color.r << 16) | (color.g << 8) | color.b)
+    .toString(16)
+    .slice(1);
+}
+
+/**
+ * Force every fill/stroke in the SVG onto the posterize palette so mesh
+ * uniqueColors cannot exceed the slider (VTracer often invents near-shades).
+ */
+export function snapSvgColorsToPalette(svgStr: string, palette: Rgb[]): string {
+  if (palette.length === 0) return svgStr;
+
+  const snapCss = (css: string): string => {
+    const parsed = parseCssColor(css);
+    if (!parsed) return css;
+    const nearest = nearestPaletteColor(parsed, palette);
+    return `#${rgbToHex6(nearest)}`;
+  };
+
+  return svgStr.replace(
+    /\b(fill|stroke)\s*=\s*["']([^"']+)["']/gi,
+    (full, attr: string, value: string) => {
+      if (/^none$/i.test(value.trim())) return full;
+      return `${attr}="${snapCss(value)}"`;
+    },
+  );
+}
+
+function parseCssColor(value: string): Rgb | null {
+  const v = value.trim();
+  const hex = v.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
+  if (hex) {
+    let h = hex[1];
+    if (h.length === 3) {
+      h = h.split('').map((c) => c + c).join('');
+    }
+    const n = parseInt(h, 16);
+    return { r: (n >> 16) & 0xff, g: (n >> 8) & 0xff, b: n & 0xff };
+  }
+  const rgb = v.match(
+    /^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i,
+  );
+  if (rgb) {
+    return {
+      r: Math.min(255, parseInt(rgb[1], 10)),
+      g: Math.min(255, parseInt(rgb[2], 10)),
+      b: Math.min(255, parseInt(rgb[3], 10)),
+    };
+  }
+  return null;
+}
+
+/**
+ * Content-only palette (no background flood-fill). Used for slider suggestion
+ * and for posterizing before VTracer so flat regions stay one exact color.
+ */
+function buildContentPalette(
+  data: Uint8ClampedArray,
+  width: number,
+  height: number,
+  maxContentColors: number,
+): Rgb[] {
+  const bgMask = new Uint8Array(width * height);
+  const sampled = sampleContentPixels(data, width, height, bgMask);
+  if (sampled.length === 0) return [WHITE];
+
+  // Over-segment then collapse — frequency-aware merge beats truncating.
+  const cutTarget = Math.min(
+    MEDIAN_CUT_TARGET,
+    Math.max(maxContentColors * 2, maxContentColors),
+  );
+  let palette = mergeSimilarPalette(medianCut(sampled, cutTarget), 8);
+  const frequencies = countColorFrequencies(sampled, palette);
+  palette = collapsePalette(
+    palette,
+    frequencies,
+    maxContentColors,
+    CONTENT_MERGE_DELTA_E,
+  );
+
+  // Preserve eye sclera whites and soft grey crescents — sparse samples that
+  // otherwise collapse into pink under median-cut.
+  const isNearWhiteSample = (c: Rgb) =>
+    rgbDistance(c, WHITE) <= 55 ||
+    (getLuminance(c) >= 220 && Math.max(c.r, c.g, c.b) - Math.min(c.r, c.g, c.b) <= 35);
+  const isSoftGreySample = (c: Rgb) => {
+    const lum = getLuminance(c);
+    const chroma = Math.max(c.r, c.g, c.b) - Math.min(c.r, c.g, c.b);
+    return lum >= 160 && lum < 220 && chroma <= 28;
+  };
+
+  const hasNearWhite = sampled.some(isNearWhiteSample);
+  const hasSoftGrey = sampled.some(isSoftGreySample);
+  if (hasNearWhite) {
+    if (!palette.some(c => rgbDistance(c, WHITE) <= 30)) {
+      palette = [...palette, WHITE];
+    }
+    const nearWhites = palette
+      .map((c, i) => ({ c, i, dist: rgbDistance(c, WHITE) }))
+      .filter(e => e.dist <= 30 || isNearWhiteSample(e.c))
+      .sort((a, b) => a.dist - b.dist);
+    if (nearWhites.length > 0) {
+      palette[nearWhites[0].i] = WHITE;
+    }
+  }
+  if (hasSoftGrey) {
+    const greySamples = sampled.filter(isSoftGreySample);
+    const greyAvg = averageColors(greySamples);
+    if (!palette.some(c => deltaE76(c, greyAvg) < 10 && isSoftGreySample(c))) {
+      palette = ensureDistinctColor(palette, greyAvg, 10);
+    }
+  }
+
+  if (palette.length > maxContentColors) {
+    const freqs = countColorFrequencies(sampled, palette);
+    const ranked = palette
+      .map((c, i) => ({ c, i, n: freqs[i] ?? 0 }))
+      .sort((a, b) => b.n - a.n);
+    // Keep most frequent, but always retain pure white if present.
+    const keep = new Set<number>();
+    const whiteIdx = ranked.findIndex(e => rgbDistance(e.c, WHITE) <= 5);
+    if (whiteIdx >= 0) keep.add(ranked[whiteIdx].i);
+    for (const entry of ranked) {
+      if (keep.size >= maxContentColors) break;
+      keep.add(entry.i);
+    }
+    palette = palette.filter((_, i) => keep.has(i));
+  }
+
+  return palette.length > 0 ? palette : [WHITE];
+}
+
+function quantizeOpaqueToPalette(
+  data: Uint8ClampedArray,
+  width: number,
+  height: number,
+  palette: Rgb[],
+): void {
+  const total = width * height;
+  for (let i = 0; i < total; i++) {
+    const idx = i * 4;
+    if (data[idx + 3] < 128) continue;
+    writeRgb(data, idx, nearestPaletteColor(readRgb(data, idx), palette));
+  }
+}
+
+/** Merged-palette length after strong Delta-E collapse — capped for sensible defaults. */
+function suggestColorCountFromPalette(
+  data: Uint8ClampedArray,
+  width: number,
+  height: number,
+): number {
+  const palette = buildContentPalette(data, width, height, DEFAULT_MAX_CONTENT_COLORS);
+  return Math.min(
+    DEFAULT_MAX_CONTENT_COLORS,
+    Math.max(MIN_COLOR_COUNT, palette.length),
+  );
 }
 
 /**
@@ -1160,30 +1358,6 @@ function lightFringeDespeckle(
       }
     }
   }
-}
-
-/** Fast distinct-color estimate (4 bits/channel) for the UI slider hint. */
-function estimateDistinctColorCount(
-  data: Uint8ClampedArray,
-  width: number,
-  height: number,
-): number {
-  const keys = new Set<number>();
-  const total = width * height;
-  const step = Math.max(1, Math.floor(total / MAX_SAMPLE_PIXELS));
-  for (let i = 0; i < total; i += step) {
-    const idx = i * 4;
-    if (data[idx + 3] < 128) continue;
-    const key =
-      ((data[idx] & 0xf0) << 8) |
-      ((data[idx + 1] & 0xf0) << 4) |
-      (data[idx + 2] & 0xf0);
-    keys.add(key);
-  }
-  return Math.min(
-    MAX_COLOR_COUNT,
-    Math.max(MIN_COLOR_COUNT, keys.size),
-  );
 }
 
 /**

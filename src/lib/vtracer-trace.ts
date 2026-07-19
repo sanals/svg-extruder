@@ -36,10 +36,26 @@ function degToRad(deg: number): number {
  */
 export function buildVtracerConfig(colorCount: number): VTracerConfig {
   const colors = Math.max(2, Math.min(64, Math.round(colorCount)));
-  // Fewer colors → more merge; 12+ keep loss=1 so AA fringe doesn't become
-  // jumpy micro-islands (Chat-Large).
-  const colorPrecision = colors <= 6 ? 2 : 1;
-  const layerDifference = colors <= 8 ? 16 : colors <= 16 ? 20 : 28;
+  // Input is already posterized to ≤N flat colors. Use strong same-color loss
+  // so VTracer does not re-split a single flat into near-shade layers.
+  let colorPrecision: number;
+  let layerDifference: number;
+  if (colors <= 4) {
+    colorPrecision = 8;
+    layerDifference = 48;
+  } else if (colors <= 8) {
+    colorPrecision = 6;
+    layerDifference = 32;
+  } else if (colors <= 16) {
+    colorPrecision = 5;
+    layerDifference = 28;
+  } else if (colors <= 32) {
+    colorPrecision = 3;
+    layerDifference = 20;
+  } else {
+    colorPrecision = 2;
+    layerDifference = 16;
+  }
   // Drop 1–few-pixel fringe clusters (trash AA / edge crumbs).
   const filterSpeckle = 12 * 12;
 
