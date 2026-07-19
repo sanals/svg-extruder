@@ -1,8 +1,7 @@
 /**
- * Curve-preserving post-trace cleanup.
- * Never Clipper-rebuilds path data (that destroyed ImageTracer Q curves and
- * could empty the scene on complex SVGs). Instead:
- * 1) Recolor tiny dark crumbs to a nearby large fill (keep `d`)
+ * Curve-preserving post-trace cleanup (VTracer / cubic-friendly).
+ * Never Clipper-rebuilds path data. Instead:
+ * 1) Recolor tiny crumbs + thin same-color edge spurs to a nearby large fill (keep `d`)
  * 2) Simplify nearly-collinear L runs only (never touch Q/C)
  * 3) Set stroke = fill with a small width to seal empty abutting seams
  */
@@ -31,7 +30,11 @@ interface PathInfo {
 const LIGHT_LUM = 200;
 const TINY_AREA = 80;
 const TINY_SPAN = 4;
-const SEAM_STROKE_WIDTH = 0.7;
+/** Needle-like spur: thin side and high aspect (AI ring L-artifacts). */
+const SPUR_MIN_THIN = 2.5;
+const SPUR_ASPECT = 6;
+const SPUR_MAX_AREA = 400;
+const SEAM_STROKE_WIDTH = 0.35;
 /** Max distance-to-chord to drop an intermediate L vertex (SVG units). */
 const COLLINEAR_EPSILON = 0.35;
 /** Snap near-horizontal / near-vertical L jitter within this tolerance. */
@@ -128,8 +131,8 @@ function turnDeviationDeg(
 }
 
 /**
- * Circles/arcs from ImageTracer are often dense L polylines with many similar
- * small turns. Detect that and skip simplify so we don't facet them into octagons.
+ * Circles/arcs are often dense L polylines with many similar small turns.
+ * Detect that and skip simplify so we don't facet them into octagons.
  */
 function looksLikeCurvedRun(points: Array<[number, number]>): boolean {
   if (points.length < CURVED_RUN_MIN_TURNS + 2) return false;
@@ -441,7 +444,6 @@ function boxesNear(a: PathInfo, b: PathInfo, pad = 3): boolean {
 }
 
 function isTiny(path: PathInfo): boolean {
-  if (isLightFill(path.rgb)) return false;
   const span = Math.max(path.maxX - path.minX, path.maxY - path.minY);
   return path.area < TINY_AREA || span < TINY_SPAN;
 }
@@ -452,6 +454,27 @@ function isCompactDetail(path: PathInfo): boolean {
   const h = Math.max(0.001, path.maxY - path.minY);
   const aspect = Math.max(w, h) / Math.min(w, h);
   return aspect <= 1.8 && path.area >= 6 && path.area <= 400;
+}
+
+function isThinSpur(path: PathInfo): boolean {
+  const w = Math.max(0.001, path.maxX - path.minX);
+  const h = Math.max(0.001, path.maxY - path.minY);
+  const mn = Math.min(w, h);
+  const mx = Math.max(w, h);
+  return mn < SPUR_MIN_THIN && mx / mn >= SPUR_ASPECT && path.area < SPUR_MAX_AREA;
+}
+
+function hugsGlobalEdge(
+  path: PathInfo,
+  global: { minX: number; minY: number; maxX: number; maxY: number },
+  pad = 2,
+): boolean {
+  return (
+    path.minX <= global.minX + pad ||
+    path.maxX >= global.maxX - pad ||
+    path.minY <= global.minY + pad ||
+    path.maxY >= global.maxY - pad
+  );
 }
 
 function fillDistance(a: Rgb | null, b: Rgb | null): number {
@@ -510,16 +533,34 @@ function parsePaths(svgStr: string): PathInfo[] {
   return paths;
 }
 
-/**
- * Recolor tiny dark crumbs to the nearest large neighbor fill.
- * Keeps original `d` so curves are never flattened.
- */
-function absorbTinyFills(paths: PathInfo[]): Map<number, string> {
-  const fillOverrides = new Map<number, string>();
-  const large = paths.filter(p => !isTiny(p));
-  if (large.length === 0) return fillOverrides;
+interface EdgeDebrisResult {
+  /** Recolor crumb to neighbor fill (different color AA fringe). */
+  fillOverrides: Map<number, string>;
+  /** Drop path entirely (same-color thin spurs — recolor alone stays visible). */
+  deleteIndexes: Set<number>;
+}
 
-  // Colors that appear on several compact blobs are intentional motifs (feather spots).
+/**
+ * Absorb edge debris: recolor unlike crumbs; delete same-color thin spurs / edge strips.
+ * Never rewrites path `d` geometry.
+ */
+function absorbEdgeDebris(paths: PathInfo[]): EdgeDebrisResult {
+  const fillOverrides = new Map<number, string>();
+  const deleteIndexes = new Set<number>();
+  if (paths.length === 0) return { fillOverrides, deleteIndexes };
+
+  let gMinX = Infinity, gMinY = Infinity, gMaxX = -Infinity, gMaxY = -Infinity;
+  for (const p of paths) {
+    gMinX = Math.min(gMinX, p.minX);
+    gMinY = Math.min(gMinY, p.minY);
+    gMaxX = Math.max(gMaxX, p.maxX);
+    gMaxY = Math.max(gMaxY, p.maxY);
+  }
+  const global = { minX: gMinX, minY: gMinY, maxX: gMaxX, maxY: gMaxY };
+
+  const large = paths.filter(p => !isTiny(p) && !isThinSpur(p));
+  if (large.length === 0) return { fillOverrides, deleteIndexes };
+
   const compactColorCounts = new Map<string, number>();
   for (const path of paths) {
     if (!isCompactDetail(path) || !path.rgb) continue;
@@ -527,36 +568,80 @@ function absorbTinyFills(paths: PathInfo[]): Map<number, string> {
     compactColorCounts.set(key, (compactColorCounts.get(key) ?? 0) + 1);
   }
 
-  for (const tiny of paths) {
-    if (!isTiny(tiny)) continue;
-    // Never absorb compact repeated spots into their feather color.
-    if (tiny.rgb && isCompactDetail(tiny)) {
-      const key = `${tiny.rgb.r},${tiny.rgb.g},${tiny.rgb.b}`;
+  const shouldAbsorb = (path: PathInfo): boolean => {
+    if (isTiny(path)) return true;
+    if (isThinSpur(path)) return true;
+    if (hugsGlobalEdge(path, global, 2)) {
+      const w = path.maxX - path.minX;
+      const h = path.maxY - path.minY;
+      const mn = Math.min(w, h);
+      if (mn < 3.5 && path.area < SPUR_MAX_AREA) return true;
+    }
+    return false;
+  };
+
+  for (const crumb of paths) {
+    if (!shouldAbsorb(crumb)) continue;
+    if (crumb.rgb && isCompactDetail(crumb)) {
+      const key = `${crumb.rgb.r},${crumb.rgb.g},${crumb.rgb.b}`;
       if ((compactColorCounts.get(key) ?? 0) >= 2) continue;
+    }
+    if (isLightFill(crumb.rgb) && crumb.area >= TINY_AREA && !isThinSpur(crumb) && !hugsGlobalEdge(crumb, global, 2)) {
+      continue;
     }
 
     let best: PathInfo | null = null;
     let bestScore = Number.POSITIVE_INFINITY;
+    const span = Math.max(crumb.maxX - crumb.minX, crumb.maxY - crumb.minY);
+    // Micro AA crumbs between unlike colors (grey on orange) — ignore fill distance.
+    const microCrumbs = isTiny(crumb) && (crumb.area < 40 || span < 3);
+    const colorBudget = microCrumbs
+      ? 999
+      : (isThinSpur(crumb) || hugsGlobalEdge(crumb, global, 2) ? 40 : 48);
+
     for (const neighbor of large) {
-      if (!boxesNear(tiny, neighbor, 4)) continue;
-      // Only absorb AA crumbs that nearly match a neighbor — distinct spot colors stay.
-      if (fillDistance(tiny.rgb, neighbor.rgb) > 48) continue;
-      const dist = Math.hypot(tiny.cx - neighbor.cx, tiny.cy - neighbor.cy);
-      const score = dist - Math.sqrt(neighbor.area) * 0.01;
+      if (neighbor.index === crumb.index) continue;
+      if (!boxesNear(crumb, neighbor, 6)) continue;
+      if (neighbor.area <= crumb.area * 2) continue;
+      if (fillDistance(crumb.rgb, neighbor.rgb) > colorBudget) continue;
+      const contains =
+        crumb.cx >= neighbor.minX && crumb.cx <= neighbor.maxX &&
+        crumb.cy >= neighbor.minY && crumb.cy <= neighbor.maxY;
+      // Edge distance to neighbor bbox (0 if inside) — AA crumbs sit on the host edge.
+      const dx = crumb.cx < neighbor.minX ? neighbor.minX - crumb.cx
+        : crumb.cx > neighbor.maxX ? crumb.cx - neighbor.maxX : 0;
+      const dy = crumb.cy < neighbor.minY ? neighbor.minY - crumb.cy
+        : crumb.cy > neighbor.maxY ? crumb.cy - neighbor.maxY : 0;
+      const edgeDist = Math.hypot(dx, dy);
+      // Prefer containing / touching hosts, then larger area (main body over distant rings).
+      const score = (contains ? 0 : 500) + edgeDist * 10 - Math.sqrt(neighbor.area);
       if (score < bestScore) {
         bestScore = score;
         best = neighbor;
       }
     }
-    if (best) fillOverrides.set(tiny.index, best.fill);
+    if (!best) continue;
+
+    const sameColor = fillDistance(crumb.rgb, best.rgb) <= 24;
+    const isSpurLike = isThinSpur(crumb) || (
+      hugsGlobalEdge(crumb, global, 2) &&
+      Math.min(crumb.maxX - crumb.minX, crumb.maxY - crumb.minY) < 3.5
+    );
+
+    // Same-color needle/edge strips must be removed — recolor alone leaves a visible spur.
+    if (sameColor && isSpurLike) {
+      deleteIndexes.add(crumb.index);
+    } else {
+      fillOverrides.set(crumb.index, best.fill);
+    }
   }
 
-  return fillOverrides;
+  return { fillOverrides, deleteIndexes };
 }
 
 /**
- * Post-trace cleanup that preserves ImageTracer curves:
- * absorb tiny dark crumbs by recoloring fill, simplify collinear L runs only,
+ * Post-trace cleanup:
+ * absorb edge debris by recoloring/deleting, simplify collinear L runs only,
  * then seal empty seams with stroke=fill.
  */
 export function sealAndStraightenSvg(svgStr: string): string {
@@ -564,12 +649,14 @@ export function sealAndStraightenSvg(svgStr: string): string {
   if (paths.length === 0) return svgStr;
 
   try {
-    const fillOverrides = absorbTinyFills(paths);
+    const { fillOverrides, deleteIndexes } = absorbEdgeDebris(paths);
     let pathIndex = 0;
 
     return svgStr.replace(/<path\b[^>]*\/?>/gi, (tag) => {
       const currentIndex = pathIndex;
       pathIndex += 1;
+
+      if (deleteIndexes.has(currentIndex)) return '';
 
       const fillMatch = tag.match(/\bfill\s*=\s*["']([^"']+)["']/i);
       const dMatch = tag.match(/\bd\s*=\s*["']([^"']+)["']/i);

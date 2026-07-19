@@ -1073,6 +1073,123 @@ export interface PreprocessOptions {
   maxContentColors?: number;
 }
 
+export interface VtracerPrepareResult {
+  /** Pixel buffer ready for VTracer (no PNG roundtrip). */
+  imageData: ImageData;
+  /** Hint for the UI color slider / VTracer colorPrecision mapping. */
+  suggestedColorCount: number;
+}
+
+/**
+ * Light prep for VTracer: ImageData out, no morph/quantize warpath.
+ * VTracer owns clustering; we dissolve AA fringe and snap midtone joins
+ * onto the two abutting flats so shared edges are cleaner.
+ */
+export function prepareCanvasForVtracer(canvas: HTMLCanvasElement): VtracerPrepareResult {
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) {
+    throw new Error('Could not acquire 2D canvas context for image preprocessing.');
+  }
+
+  const { width, height } = canvas;
+  const imageData = ctx.getImageData(0, 0, width, height);
+  lightFringeDespeckle(imageData.data, width, height);
+  // Empty mask = treat every opaque pixel as content (no background skip).
+  const bgMask = new Uint8Array(width * height);
+  snapTwoColorBoundaries(imageData.data, width, height, bgMask);
+  const suggestedColorCount = estimateDistinctColorCount(imageData.data, width, height);
+
+  return {
+    imageData,
+    suggestedColorCount,
+  };
+}
+
+/**
+ * Dissolve 1–2px AA fringe into the majority neighbor.
+ * Protects true light ink (lum >= 200) so thin whites/spots stay.
+ */
+function lightFringeDespeckle(
+  data: Uint8ClampedArray,
+  width: number,
+  height: number,
+): void {
+  const source = new Uint8ClampedArray(data);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const idx = (y * width + x) * 4;
+      if (source[idx + 3] < 128) continue;
+
+      const selfR = source[idx];
+      const selfG = source[idx + 1];
+      const selfB = source[idx + 2];
+      const selfLum = 0.299 * selfR + 0.587 * selfG + 0.114 * selfB;
+      if (selfLum >= 200) continue;
+
+      const selfKey = rgbKey(selfR, selfG, selfB);
+      const counts = new Map<number, number>();
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          const nx = x + dx;
+          const ny = y + dy;
+          if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
+          const nIdx = (ny * width + nx) * 4;
+          if (source[nIdx + 3] < 128) continue;
+          const key = rgbKey(source[nIdx], source[nIdx + 1], source[nIdx + 2]);
+          counts.set(key, (counts.get(key) ?? 0) + 1);
+        }
+      }
+
+      const selfCount = counts.get(selfKey) ?? 0;
+      if (selfCount > 2) continue;
+
+      let bestKey = selfKey;
+      let bestCount = 0;
+      counts.forEach((count, key) => {
+        if (key === selfKey) return;
+        if (count > bestCount) {
+          bestCount = count;
+          bestKey = key;
+        }
+      });
+
+      if (bestKey !== selfKey && bestCount >= 4) {
+        data[idx] = (bestKey >> 16) & 0xff;
+        data[idx + 1] = (bestKey >> 8) & 0xff;
+        data[idx + 2] = bestKey & 0xff;
+      }
+    }
+  }
+}
+
+/** Fast distinct-color estimate (4 bits/channel) for the UI slider hint. */
+function estimateDistinctColorCount(
+  data: Uint8ClampedArray,
+  width: number,
+  height: number,
+): number {
+  const keys = new Set<number>();
+  const total = width * height;
+  const step = Math.max(1, Math.floor(total / MAX_SAMPLE_PIXELS));
+  for (let i = 0; i < total; i += step) {
+    const idx = i * 4;
+    if (data[idx + 3] < 128) continue;
+    const key =
+      ((data[idx] & 0xf0) << 8) |
+      ((data[idx + 1] & 0xf0) << 4) |
+      (data[idx + 2] & 0xf0);
+    keys.add(key);
+  }
+  return Math.min(
+    MAX_COLOR_COUNT,
+    Math.max(MIN_COLOR_COUNT, keys.size),
+  );
+}
+
+/**
+ * @deprecated ImageTracer-era heavy preprocess. Prefer prepareCanvasForVtracer.
+ * Kept temporarily for reference; not used by the convert path.
+ */
 export function preprocessCanvas(
   canvas: HTMLCanvasElement,
   options: PreprocessOptions = {},
@@ -1095,18 +1212,14 @@ export function preprocessCanvas(
   const background = detectBackgroundColor(cornerSamples) ?? { r: 245, g: 245, b: 245 };
   const bgMask = floodFillBackgroundMask(data, width, height, background);
 
-  // Keep full source dimensions so the SVG viewBox matches the uploaded image.
-  // Background is flattened in-place; downstream tracing keeps all fills intact.
   let palette = buildPalette(data, width, height, bgMask, background, maxContentColors);
   quantizeToPalette(data, width, height, palette, bgMask, background);
   dissolveFringeColors(data, width, height, bgMask, background);
   morphologicalOpenIndexed(data, width, height, bgMask, background);
   snapTwoColorBoundaries(data, width, height, bgMask);
   despeckleIndexed(data, width, height, bgMask, 2);
-  // Second snap after despeckle collapses leftover midtone stair ribbons.
   snapTwoColorBoundaries(data, width, height, bgMask);
 
-  // Rebuild palette from the cleaned raster so ImageTracer sees only consolidated colors.
   palette = extractPaletteFromImage(data, width, height, bgMask, background);
 
   const suggestedColorCount = Math.min(

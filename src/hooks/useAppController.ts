@@ -4,9 +4,9 @@ import { type SvgModelRef } from '../components/SvgModel';
 import { useHistory } from './useHistory';
 import { exportToSTL } from '../lib/export-utils';
 import { computeAutoExtrudeDepths, calculateLineArtParams, generateSVGFromShapes } from '../lib/app-logic';
-import { preprocessCanvas, type PaletteColor } from '../lib/image-preprocess';
+import { prepareCanvasForVtracer } from '../lib/image-preprocess';
 import { sealAndStraightenSvg } from '../lib/svg-path-cleanup';
-import { dataUrlToVtracerSvg } from '../lib/vtracer-trace';
+import { rgbaToVtracerSvg } from '../lib/vtracer-trace';
 
 export function useAppController() {
   const [svgUrl, setSvgUrl] = useState<string | null>(null);
@@ -78,10 +78,8 @@ export function useAppController() {
 
   const colorChangeTimeout = useRef<number | null>(null);
   const traceIdRef = useRef<number>(0);
-  const lastPaletteRef = useRef<PaletteColor[] | undefined>(undefined);
-  const lastBackgroundRef = useRef<PaletteColor | null>(null);
-  /** Raw resized image before palette collapse — used when the color slider changes. */
-  const sourceImageDataUrlRef = useRef<string | null>(null);
+  /** Prepared RGBA snapshot for re-trace when the color slider changes (no PNG roundtrip). */
+  const sourceRgbaRef = useRef<{ data: Uint8ClampedArray; width: number; height: number } | null>(null);
 
   const currentMeshColors = meshColors.map(m => ({
     id: m.id,
@@ -494,26 +492,27 @@ export function useAppController() {
   };
 
   const traceImage = (
-    dataUrl: string,
+    rgba: { data: Uint8ClampedArray; width: number; height: number },
     colors: number,
-    palette?: PaletteColor[],
-    backgroundColor?: PaletteColor | null,
+    previewDataUrl?: string | null,
   ) => {
-    if (palette) lastPaletteRef.current = palette;
-    if (backgroundColor !== undefined) lastBackgroundRef.current = backgroundColor;
+    sourceRgbaRef.current = {
+      data: new Uint8ClampedArray(rgba.data),
+      width: rgba.width,
+      height: rgba.height,
+    };
 
     const currentTraceId = ++traceIdRef.current;
     setIsTracing("Step 3/4: Vectorizing Pixels to SVG...");
+    // Yield so the status label paints, then run VTracer in a worker.
     setTimeout(async () => {
       try {
-        // VTracer (spline) — same class of boundary+curve fitting as pngtosvg.
-        // Preprocess already posterized the bitmap; VTracer traces smooth paths.
-        const colorHint = palette?.length ?? colors;
-        const svgStr = await dataUrlToVtracerSvg(dataUrl, { colorCount: colorHint });
+        const svgStr = await rgbaToVtracerSvg(rgba.data, rgba.width, rgba.height, {
+          colorCount: colors,
+        });
         if (currentTraceId !== traceIdRef.current) return;
 
-        // Keep outer/background fills. Seal empty voids between abutting
-        // colors (do not delete crumbs into holes; no aggressive Q rewrite).
+        // Absorb edge crumbs / seal abutting seams (never Clipper-rebuild curves).
         const cleanedSvg = sealAndStraightenSvg(svgStr);
         const blob = new Blob([cleanedSvg], { type: 'image/svg+xml' });
         const svgBlobUrl = URL.createObjectURL(blob);
@@ -528,14 +527,14 @@ export function useAppController() {
         setMeshColors([]);
         setMeshColorOverrides({});
         setIsMerging(false);
-        setImageDataUrl(dataUrl);
+        if (previewDataUrl) setImageDataUrl(previewDataUrl);
       } catch (err) {
         if (currentTraceId !== traceIdRef.current) return;
         console.error('VTracer vectorization failed', err);
         setIsTracing(null);
         alert('Vectorization failed. Please try another image or color count.');
       }
-    }, 50);
+    }, 0);
   };
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -591,23 +590,27 @@ export function useAppController() {
               ctx.imageSmoothingEnabled = wasDownscaled;
               ctx.imageSmoothingQuality = 'high';
               ctx.drawImage(img, 0, 0, width, height);
-              const sourceDataUrl = canvas.toDataURL('image/png');
-              sourceImageDataUrlRef.current = sourceDataUrl;
-              setIsTracing("Step 2/4: Cleaning edges & detecting palette...");
+              // Preview-only PNG; tracing uses ImageData (no encode/decode roundtrip).
+              const previewDataUrl = canvas.toDataURL('image/png');
+              setIsTracing("Step 2/4: Preparing image for vectorizer...");
               setTimeout(() => {
                 try {
-                  const { dataUrl, suggestedColorCount, palette, backgroundColor } = preprocessCanvas(canvas, {
-                    maxContentColors: 28,
-                  });
+                  const { imageData, suggestedColorCount } = prepareCanvasForVtracer(canvas);
                   setColorCount(suggestedColorCount);
-                  lastPaletteRef.current = palette;
-                  lastBackgroundRef.current = backgroundColor;
-                  traceImage(dataUrl, suggestedColorCount, palette, backgroundColor);
+                  traceImage(
+                    { data: imageData.data, width: imageData.width, height: imageData.height },
+                    suggestedColorCount,
+                    previewDataUrl,
+                  );
                 } catch {
-                  const dataUrl = canvas.toDataURL("image/png");
-                  traceImage(dataUrl, colorCount);
+                  const fallback = ctx.getImageData(0, 0, width, height);
+                  traceImage(
+                    { data: fallback.data, width, height },
+                    colorCount,
+                    previewDataUrl,
+                  );
                 }
-              }, 50);
+              }, 0);
             }
           }, 50);
         };
@@ -667,33 +670,11 @@ export function useAppController() {
     }
 
     colorChangeTimeout.current = window.setTimeout(() => {
-      const sourceUrl = sourceImageDataUrlRef.current;
-      if (!sourceUrl) {
-        if (imageDataUrl) traceImage(imageDataUrl, newColors);
-        return;
-      }
-
-      setIsTracing("Step 2/4: Rebuilding palette...");
-      const img = new Image();
-      img.onload = () => {
-        const canvas = document.createElement('canvas');
-        canvas.width = img.width;
-        canvas.height = img.height;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) return;
-        ctx.drawImage(img, 0, 0);
-        try {
-          const { dataUrl, palette, backgroundColor } = preprocessCanvas(canvas, {
-            maxContentColors: newColors,
-          });
-          lastPaletteRef.current = palette;
-          lastBackgroundRef.current = backgroundColor;
-          traceImage(dataUrl, newColors, palette, backgroundColor);
-        } catch {
-          traceImage(sourceUrl, newColors);
-        }
-      };
-      img.src = sourceUrl;
+      const source = sourceRgbaRef.current;
+      if (!source) return;
+      // Re-trace only — VTracer re-clusters from the cached RGBA + new color hint.
+      setIsTracing("Step 3/4: Re-vectorizing with new color count...");
+      traceImage(source, newColors, imageDataUrl);
     }, 400);
   };
 

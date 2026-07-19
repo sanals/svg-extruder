@@ -204,10 +204,11 @@ export async function sliceAndExport(
           const totalDepth = depth + backingDepth;
           let geom: THREE.BufferGeometry;
           if (totalDepth === 0) {
-            geom = new THREE.ShapeGeometry(clippedShapes);
+            geom = new THREE.ShapeGeometry(clippedShapes, 32);
           } else {
             geom = new THREE.ExtrudeGeometry(clippedShapes, {
               depth: totalDepth,
+              curveSegments: 32,
               bevelEnabled: sealGaps,
               bevelSize: sealGaps ? 0.2 : 0,
               bevelThickness: sealGaps ? 0.05 : 0,

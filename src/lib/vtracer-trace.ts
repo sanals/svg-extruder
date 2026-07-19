@@ -1,17 +1,17 @@
 /**
  * Browser wrapper around visioncortex VTracer (via vtracer-wasm).
- * Produces spline SVG paths — closer to pngtosvg-quality curves than ImageTracer.
+ * Runs in a Web Worker (pngtosvg-style) so the UI stays responsive.
  */
 
-import init, { to_svg } from 'vtracer-wasm';
-import wasmUrl from 'vtracer-wasm/vtracer.wasm?url';
+import type { VTracerWorkerRequest, VTracerWorkerResponse } from './vtracer.worker';
 
 export interface VTracerTraceOptions {
-  /** Approximate palette size hint (from UI / preprocess). */
+  /** Approximate palette size hint from the UI color slider. */
   colorCount?: number;
 }
 
-interface VTracerConfig {
+/** Config shape expected by vtracer-wasm (camelCase). */
+export interface VTracerConfig {
   binary: boolean;
   mode: 'spline' | 'polygon' | 'pixel';
   hierarchical: 'stacked' | 'cutout';
@@ -25,82 +25,97 @@ interface VTracerConfig {
   pathPrecision: number;
 }
 
-let initPromise: Promise<void> | null = null;
-
-function ensureVtracerReady(): Promise<void> {
-  if (!initPromise) {
-    initPromise = init({ module_or_path: wasmUrl }).then(() => undefined);
-  }
-  return initPromise;
-}
-
 function degToRad(deg: number): number {
   return (deg * Math.PI) / 180;
 }
 
 /**
- * Build config matching VTracer poster/clip-art defaults, with thresholds in
- * radians (what vtracer-wasm passes straight into to_compound_path).
- *
- * Note: `colorPrecision` here is the Runner `is_same_color_a` loss value
- * (cmdapp uses `8 - color_precision_bits`). `filterSpeckle` is an area in px².
+ * Build config for clip-art / logos.
+ * `colorPrecision` is Runner `is_same_color_a` loss (cmdapp: `8 - bits`).
+ * `filterSpeckle` is area in px².
  */
-function buildConfig(colorCount: number): VTracerConfig {
+export function buildVtracerConfig(colorCount: number): VTracerConfig {
   const colors = Math.max(2, Math.min(64, Math.round(colorCount)));
-  // Pre-quantized clip art: low loss so flat regions stay intact.
-  // Fewer UI colors → allow slightly more merge; many colors → loss 0.
-  const colorPrecision = colors <= 6 ? 2 : colors <= 12 ? 1 : 0;
+  // Fewer colors → more merge; 12+ keep loss=1 so AA fringe doesn't become
+  // jumpy micro-islands (Chat-Large).
+  const colorPrecision = colors <= 6 ? 2 : 1;
   const layerDifference = colors <= 8 ? 16 : colors <= 16 ? 20 : 28;
-  // pngtosvg-like speckleSize ~8 → area 64 (cmdapp squares the linear size).
-  const filterSpeckle = 8 * 8;
+  // Drop 1–few-pixel fringe clusters (trash AA / edge crumbs).
+  const filterSpeckle = 12 * 12;
 
   return {
     binary: false,
     mode: 'spline',
     hierarchical: 'stacked',
-    cornerThreshold: degToRad(60),
-    lengthThreshold: 4,
+    cornerThreshold: degToRad(90),
+    lengthThreshold: 3,
     maxIterations: 10,
-    spliceThreshold: degToRad(45),
+    spliceThreshold: degToRad(30),
     filterSpeckle,
     colorPrecision,
     layerDifference,
-    pathPrecision: 2,
+    pathPrecision: 3,
   };
 }
 
+let worker: Worker | null = null;
+let nextRequestId = 1;
+
+function getWorker(): Worker {
+  if (!worker) {
+    worker = new Worker(new URL('./vtracer.worker.ts', import.meta.url), { type: 'module' });
+  }
+  return worker;
+}
+
+function postToWorker(
+  pixels: ArrayBuffer,
+  width: number,
+  height: number,
+  config: VTracerConfig,
+): Promise<string> {
+  const w = getWorker();
+  const id = nextRequestId++;
+  const request: VTracerWorkerRequest = { id, pixels, width, height, config };
+
+  return new Promise((resolve, reject) => {
+    const onMessage = (ev: MessageEvent<VTracerWorkerResponse>) => {
+      if (ev.data.id !== id) return;
+      w.removeEventListener('message', onMessage);
+      w.removeEventListener('error', onError);
+      if (ev.data.type === 'done') resolve(ev.data.svg);
+      else reject(new Error(ev.data.message || 'VTracer worker failed'));
+    };
+    const onError = (err: ErrorEvent) => {
+      w.removeEventListener('message', onMessage);
+      w.removeEventListener('error', onError);
+      reject(err.error ?? new Error(err.message || 'VTracer worker crashed'));
+    };
+    w.addEventListener('message', onMessage);
+    w.addEventListener('error', onError);
+    w.postMessage(request, [pixels]);
+  });
+}
+
+/** Trace ImageData → SVG via worker. Does not mutate the source ImageData. */
 export async function imageDataToVtracerSvg(
   imageData: ImageData,
   options: VTracerTraceOptions = {},
 ): Promise<string> {
-  await ensureVtracerReady();
-  const pixels = new Uint8Array(imageData.data);
-  const config = buildConfig(options.colorCount ?? 16);
-  return to_svg(pixels, imageData.width, imageData.height, config);
+  const config = buildVtracerConfig(options.colorCount ?? 16);
+  // Transferable copy — leaves the caller's ImageData intact.
+  const pixels = imageData.data.slice().buffer;
+  return postToWorker(pixels, imageData.width, imageData.height, config);
 }
 
-/** Decode a PNG/JPEG data URL into ImageData for VTracer. */
-export async function dataUrlToImageData(dataUrl: string): Promise<ImageData> {
-  const img = new Image();
-  await new Promise<void>((resolve, reject) => {
-    img.onload = () => resolve();
-    img.onerror = () => reject(new Error('Failed to decode image for vectorization'));
-    img.src = dataUrl;
-  });
-
-  const canvas = document.createElement('canvas');
-  canvas.width = img.naturalWidth || img.width;
-  canvas.height = img.naturalHeight || img.height;
-  const ctx = canvas.getContext('2d', { willReadFrequently: true });
-  if (!ctx) throw new Error('Could not create canvas context for vectorization');
-  ctx.drawImage(img, 0, 0);
-  return ctx.getImageData(0, 0, canvas.width, canvas.height);
-}
-
-export async function dataUrlToVtracerSvg(
-  dataUrl: string,
+/** Trace a cloned RGBA buffer (e.g. from a cached source snapshot). */
+export async function rgbaToVtracerSvg(
+  rgba: Uint8ClampedArray | Uint8Array,
+  width: number,
+  height: number,
   options: VTracerTraceOptions = {},
 ): Promise<string> {
-  const imageData = await dataUrlToImageData(dataUrl);
-  return imageDataToVtracerSvg(imageData, options);
+  const config = buildVtracerConfig(options.colorCount ?? 16);
+  const pixels = rgba.slice().buffer;
+  return postToWorker(pixels, width, height, config);
 }

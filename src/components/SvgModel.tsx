@@ -200,10 +200,11 @@ export const SvgModel = forwardRef<SvgModelRef, SvgModelProps>(({
           geometry = cached.geometry;
         } else {
           if (visualDepth === 0) {
-            geometry = new THREE.ShapeGeometry(item.shapes);
+            geometry = new THREE.ShapeGeometry(item.shapes, 32);
           } else {
             geometry = new THREE.ExtrudeGeometry(item.shapes, {
               depth: visualDepth,
+              curveSegments: 32,
               bevelEnabled: sealGaps,
               bevelSize: sealGaps ? 0.2 : 0,
               bevelThickness: sealGaps ? 0.05 : 0,
