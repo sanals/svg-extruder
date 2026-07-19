@@ -6,7 +6,13 @@ import { exportToSTL } from '../lib/export-utils';
 import { computeAutoExtrudeDepths, calculateLineArtParams, generateSVGFromShapes } from '../lib/app-logic';
 import { prepareCanvasForVtracer, quantizePreparedImage, snapSvgColorsToPalette } from '../lib/image-preprocess';
 import { sealAndStraightenSvg } from '../lib/svg-path-cleanup';
-import { rgbaToVtracerSvg } from '../lib/vtracer-trace';
+import {
+  DEFAULT_TRACER_ID,
+  isTracerId,
+  listTracerBackends,
+  traceRasterToSvg,
+  type TracerId,
+} from '../lib/tracers';
 
 export function useAppController() {
   const [svgUrl, setSvgUrl] = useState<string | null>(null);
@@ -14,6 +20,7 @@ export function useAppController() {
   const [rawSvgContent, setRawSvgContent] = useState<string | null>(null);
   const [imageDataUrl, setImageDataUrl] = useState<string | null>(null);
   const [colorCount, setColorCount] = useState<number>(8);
+  const [tracerId, setTracerId] = useState<TracerId>(DEFAULT_TRACER_ID);
   const [selectedMeshIds, setSelectedMeshIds] = useState<string[]>([]);
 
   const [vertexCount, setVertexCount] = useState<number>(0);
@@ -270,7 +277,7 @@ export function useAppController() {
   const handleSaveProject = () => {
     if (!rawSvgContent) { alert("No active model to save."); return; }
     const projectData = {
-      rawSvgContent, colorCount, meshDepths, meshColorOverrides, selectedMeshIds,
+      rawSvgContent, colorCount, tracerId, meshDepths, meshColorOverrides, selectedMeshIds,
       highlightStyle, sealGaps, backingDepth, cutOverlaps, customScale, clearance, printerProfile, gridSize, mergeColors3MF
     };
     const jsonString = JSON.stringify(projectData);
@@ -295,7 +302,9 @@ export function useAppController() {
         setIsTracing("Loading Project...");
         setTimeout(() => {
           setRawSvgContent(projectData.rawSvgContent); setSvgUrl(svgBlobUrl);
-          setColorCount(Math.min(64, Math.max(2, projectData.colorCount || 8))); setMeshDepths(projectData.meshDepths || {});
+          setColorCount(Math.min(64, Math.max(2, projectData.colorCount || 8)));
+          if (isTracerId(projectData.tracerId)) setTracerId(projectData.tracerId);
+          setMeshDepths(projectData.meshDepths || {});
           setMeshColorOverrides(projectData.meshColorOverrides || {}); setSelectedMeshIds(projectData.selectedMeshIds || []);
           setHighlightStyle(projectData.highlightStyle || 'dashed'); setSealGaps(projectData.sealGaps ?? true);
           setBackingDepth(projectData.backingDepth ?? 2);
@@ -495,6 +504,7 @@ export function useAppController() {
     rgba: { data: Uint8ClampedArray; width: number; height: number },
     colors: number,
     previewDataUrl?: string | null,
+    backend: TracerId = tracerId,
   ) => {
     // Cache pre-quantize RGBA so the color slider can re-posterize cleanly.
     sourceRgbaRef.current = {
@@ -513,11 +523,15 @@ export function useAppController() {
 
     const currentTraceId = ++traceIdRef.current;
     setIsTracing("Step 3/4: Vectorizing Pixels to SVG...");
-    // Yield so the status label paints, then run VTracer in a worker.
+    // Yield so the status label paints, then run the selected tracer backend.
     setTimeout(async () => {
       try {
-        const svgStr = await rgbaToVtracerSvg(quantized, rgba.width, rgba.height, {
+        const svgStr = await traceRasterToSvg(backend, {
+          data: quantized,
+          width: rgba.width,
+          height: rgba.height,
           colorCount: clampedColors,
+          palette,
         });
         if (currentTraceId !== traceIdRef.current) return;
 
@@ -541,9 +555,9 @@ export function useAppController() {
         if (previewDataUrl) setImageDataUrl(previewDataUrl);
       } catch (err) {
         if (currentTraceId !== traceIdRef.current) return;
-        console.error('VTracer vectorization failed', err);
+        console.error('Vectorization failed', err);
         setIsTracing(null);
-        alert('Vectorization failed. Please try another image or color count.');
+        alert('Vectorization failed. Please try another image, tracer, or color count.');
       }
     }, 0);
   };
@@ -685,8 +699,18 @@ export function useAppController() {
       if (!source) return;
       // Re-posterize cached RGBA to N, then re-trace.
       setIsTracing("Step 3/4: Re-vectorizing with new color count...");
-      traceImage(source, newColors, imageDataUrl);
+      traceImage(source, newColors, imageDataUrl, tracerId);
     }, 400);
+  };
+
+  const handleTracerChange = (next: string) => {
+    if (!isTracerId(next) || next === tracerId) return;
+    setTracerId(next);
+    const source = sourceRgbaRef.current;
+    if (!source || !imageDataUrl) return;
+    const label = listTracerBackends().find((b) => b.id === next)?.label ?? next;
+    setIsTracing(`Step 3/4: Re-vectorizing with ${label}...`);
+    traceImage(source, colorCount, imageDataUrl, next);
   };
 
   const handleSelectBySizeChange = (val: number) => {
@@ -748,7 +772,8 @@ export function useAppController() {
 
   return {
     svgUrl, setSvgUrl, fitTrigger, setFitTrigger, rawSvgContent, setRawSvgContent, imageDataUrl, setImageDataUrl,
-    colorCount, setColorCount, selectedMeshIds, setSelectedMeshIds, vertexCount, setVertexCount, isTracing, setIsTracing,
+    colorCount, setColorCount, tracerId, setTracerId, handleTracerChange, tracerBackends: listTracerBackends(),
+    selectedMeshIds, setSelectedMeshIds, vertexCount, setVertexCount, isTracing, setIsTracing,
     highlightStyle, setHighlightStyle, sealGaps, setSealGaps, backingDepth, setBackingDepth, cutOverlaps, setCutOverlaps,
     selectSizeThreshold, setSelectSizeThreshold, shapeAreasCache, setShapeAreasCache, mergeBeforeExport, setMergeBeforeExport,
     meshColors, setMeshColors, meshColorOverrides, setMeshColorOverrides, meshDepths, setMeshDepths,

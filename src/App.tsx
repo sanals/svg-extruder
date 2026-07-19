@@ -28,6 +28,9 @@ function App() {
     rawSvgContent,
     imageDataUrl,
     colorCount,
+    tracerId,
+    tracerBackends,
+    handleTracerChange,
     selectedMeshIds,
     vertexCount,
     isTracing,
@@ -167,6 +170,9 @@ function App() {
           imageDataUrl={imageDataUrl}
           colorCount={colorCount}
           handleColorCountChange={handleColorCountChange}
+          tracerId={tracerId}
+          tracerBackends={tracerBackends}
+          handleTracerChange={handleTracerChange}
           highlightStyle={highlightStyle}
           setHighlightStyle={setHighlightStyle}
           currentMeshColors={currentMeshColors}

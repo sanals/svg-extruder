@@ -15,6 +15,9 @@ export interface LeftPanelProps {
   imageDataUrl: string | null;
   colorCount: number;
   handleColorCountChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  tracerId: string;
+  tracerBackends: { id: string; label: string; description: string }[];
+  handleTracerChange: (id: string) => void;
   highlightStyle: 'dashed' | 'solid';
   setHighlightStyle: (style: 'dashed' | 'solid') => void;
   currentMeshColors: { id: string; colorHex: string }[];
@@ -40,7 +43,8 @@ export const LeftPanel: React.FC<LeftPanelProps> = (props) => {
   const {
     handleLoadProject, handleSaveProject, rawSvgContent, handleFileUpload, svgUrl,
     generateSVGFromCurrentShapes, uniqueColors, handleAutoExtrude, handleConvertToLineArt,
-    imageDataUrl, colorCount, handleColorCountChange, highlightStyle, setHighlightStyle,
+    imageDataUrl, colorCount, handleColorCountChange, tracerId, tracerBackends, handleTracerChange,
+    highlightStyle, setHighlightStyle,
     currentMeshColors, selectedMeshIds, setSelectedMeshIds, selectedUniqueColors,
     isMerging, handleAutoSelectSimilar, toggleColorSelection, initiateFuse,
     isFusingSelection, setIsMerging, executeMergeColors, removeColorFromSelection,
@@ -156,6 +160,22 @@ export const LeftPanel: React.FC<LeftPanelProps> = (props) => {
 
           {imageDataUrl && (
             <div style={{ marginTop: '0.5rem' }}>
+              <div style={{ fontSize: '0.75rem', color: '#94a3b8', marginBottom: '0.25rem' }}>
+                Vectorizer
+              </div>
+              <div className="segmented-control" style={{ marginBottom: '0.5rem' }}>
+                {tracerBackends.map((backend) => (
+                  <label key={backend.id} title={backend.description}>
+                    <input
+                      type="radio"
+                      name="tracerBackend"
+                      checked={tracerId === backend.id}
+                      onChange={() => handleTracerChange(backend.id)}
+                    />
+                    <span>{backend.label}</span>
+                  </label>
+                ))}
+              </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', color: '#94a3b8', marginBottom: '0.25rem' }}>
                 <label htmlFor="color-count">Image Colors To Extract</label>
                 <span>{colorCount} max</span>
