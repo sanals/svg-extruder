@@ -21,7 +21,8 @@
     "polygon-clipping": "^0.15.7",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
-    "three": "^0.185.0"
+    "three": "^0.185.0",
+    "vtracer-wasm": "^0.1.0"
   },
   "devDependencies": {
     "@types/clipper-lib": "^6.4.0",

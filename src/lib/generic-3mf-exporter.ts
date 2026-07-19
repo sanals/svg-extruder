@@ -63,6 +63,9 @@ function generateMeshObjectXml(
     geo = geo.toNonIndexed() // Flatten first to guarantee clean welding
   }
   geo = BufferGeometryUtils.mergeVertices(geo, 1e-4)
+  if (!geo.getAttribute('normal')) {
+    geo.computeVertexNormals()
+  }
 
   const pos = geo.getAttribute("position")
   const index = geo.getIndex()

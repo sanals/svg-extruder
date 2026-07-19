@@ -1,0 +1,186 @@
+import React from 'react';
+import { Download } from 'lucide-react';
+import { HoverSlider } from './HoverSlider';
+import { THIN_WALL_THRESHOLD_MM, type ThinWallPart } from '../lib/thin-wall-check';
+
+export type PrinterProfileType = 'A1 Mini (180x180)' | 'X1/P1/A1 (256x256)';
+
+interface ExportDialogProps {
+  setShowExportOptions: (show: boolean) => void;
+  printerProfile: PrinterProfileType;
+  setPrinterProfile: (val: PrinterProfileType) => void;
+  gridSize: string;
+  setGridSize: (val: string) => void;
+  mergeColors3MF: boolean;
+  setMergeColors3MF: (val: boolean) => void;
+  customScale: number;
+  setCustomScale: (val: number) => void;
+  scaleZProportionally: boolean;
+  setScaleZProportionally: (val: boolean) => void;
+  clearance: number;
+  setClearance: (val: number) => void;
+  mergeBeforeExport: boolean;
+  setMergeBeforeExport: (val: boolean) => void;
+  printFaceDown: boolean;
+  setPrintFaceDown: (val: boolean) => void;
+  canPrintFaceDown: boolean;
+  thinWallParts: ThinWallPart[];
+  handleSelectThinParts: () => void;
+  handleExport3MF: () => void;
+  handleExportSTL: () => void;
+  svgUrl: string | null;
+  exportStatus: string | null;
+}
+
+export const ExportDialog: React.FC<ExportDialogProps> = ({
+  setShowExportOptions,
+  printerProfile,
+  setPrinterProfile,
+  gridSize,
+  setGridSize,
+  mergeColors3MF,
+  setMergeColors3MF,
+  customScale,
+  setCustomScale,
+  scaleZProportionally,
+  setScaleZProportionally,
+  clearance,
+  setClearance,
+  mergeBeforeExport,
+  setMergeBeforeExport,
+  printFaceDown,
+  setPrintFaceDown,
+  canPrintFaceDown,
+  thinWallParts,
+  handleSelectThinParts,
+  handleExport3MF,
+  handleExportSTL,
+  svgUrl,
+  exportStatus
+}) => {
+  const clearanceActive = !mergeColors3MF;
+
+  return (
+    <div className="export-popup-overlay" style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.5)', zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', backdropFilter: 'blur(3px)' }} onClick={(e) => { if (e.target === e.currentTarget) setShowExportOptions(false); }}>
+      <div className="card" onClick={(e) => e.stopPropagation()} style={{ width: '400px', maxWidth: '90vw', maxHeight: '90vh', overflowY: 'auto', position: 'relative', boxShadow: '0 10px 25px rgba(0,0,0,0.5)', border: '1px solid #475569', padding: '1rem', backgroundColor: '#1e293b' }}>
+        <div className="card-header" style={{ marginBottom: '1rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div style={{ display: 'flex', alignItems: 'center' }}>
+            <Download size={14} style={{ marginRight: '6px' }} /> EXPORT OPTIONS
+          </div>
+          <button style={{ background: 'none', border: 'none', color: '#94a3b8', cursor: 'pointer', fontSize: '1.2rem', padding: '4px', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '-4px -4px -4px 0' }} onClick={() => setShowExportOptions(false)}>✕</button>
+        </div>
+        <div className="card-body">
+          <div style={{ display: 'flex', gap: '0.75rem', marginBottom: '1rem' }}>
+            <div style={{ flex: 1 }}>
+              <label className="checkbox-label" style={{ fontSize: '0.75rem', marginBottom: '0.35rem', color: '#94a3b8' }}>Printer Profile</label>
+              <select className="custom-select" value={printerProfile} onChange={(e) => setPrinterProfile(e.target.value as PrinterProfileType)}>
+                <option value="A1 Mini (180x180)">A1 Mini (180x180)</option>
+                <option value="X1/P1/A1 (256x256)">X1/P1/A1 (256x256)</option>
+              </select>
+            </div>
+            <div style={{ flex: 1 }}>
+              <label className="checkbox-label" style={{ fontSize: '0.75rem', marginBottom: '0.35rem', color: '#94a3b8' }}>Export Layout</label>
+              <select className="custom-select" value={gridSize} onChange={(e) => setGridSize(e.target.value)}>
+                <option value="auto">Actual Size (Auto-split)</option>
+                <option value="1x1">Fill 1x1 Plate</option>
+                <option value="2x2">Fill 2x2 Plates</option>
+                <option value="1x2">Fill 1x2 (Vertical)</option>
+                <option value="2x1">Fill 2x1 (Horizontal)</option>
+              </select>
+            </div>
+          </div>
+
+          <div style={{ marginBottom: '1rem', opacity: gridSize === 'auto' ? 1 : 0.4, pointerEvents: gridSize === 'auto' ? 'auto' : 'none' }}>
+            <label className="checkbox-label" style={{ fontSize: '0.75rem', marginBottom: '0.25rem', color: '#94a3b8' }}>Scale Multiplier (%)</label>
+            <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+              <div style={{ flex: 1 }}>
+                <HoverSlider min={10} max={500} step={10} value={customScale} onChange={(e: any) => setCustomScale(Number(e.target.value))} displayFormat={(v: number) => `${Math.round(v)}%`} />
+              </div>
+              <span style={{ fontSize: '0.75rem', width: '40px', color: 'white', textAlign: 'right' }}>{customScale}%</span>
+            </div>
+            {gridSize !== 'auto' && (
+              <div style={{ fontSize: '0.65rem', color: '#fbbf24', marginTop: '0.25rem' }}>Scale Multiplier is only used when "Actual Size" is selected.</div>
+            )}
+          </div>
+
+          <div style={{ marginBottom: '1rem', opacity: clearanceActive ? 1 : 0.4, pointerEvents: clearanceActive ? 'auto' : 'none' }}>
+            <label className="checkbox-label" style={{ fontSize: '0.75rem', marginBottom: '0.25rem', color: '#94a3b8' }}>Assembly Clearance (mm)</label>
+            <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+              <div style={{ flex: 1 }}>
+                <HoverSlider min={0} max={1} step={0.05} value={clearance} onChange={(e: any) => setClearance(Number(e.target.value))} displayFormat={(v: number) => v.toFixed(2)} />
+              </div>
+              <span style={{ fontSize: '0.75rem', width: '40px', color: 'white', textAlign: 'right' }}>{clearance.toFixed(2)}</span>
+            </div>
+            {!clearanceActive && (
+              <div style={{ fontSize: '0.65rem', color: '#94a3b8', marginTop: '0.25rem' }}>
+                Clearance is ignored when joining objects by color.
+              </div>
+            )}
+          </div>
+
+          {thinWallParts.length > 0 && (
+            <div style={{ marginBottom: '1rem', padding: '0.65rem 0.75rem', borderRadius: '6px', backgroundColor: 'rgba(251, 191, 36, 0.12)', border: '1px solid rgba(251, 191, 36, 0.35)' }}>
+              <div style={{ fontSize: '0.75rem', color: '#fbbf24', lineHeight: 1.4, marginBottom: '0.5rem' }}>
+                {thinWallParts.length} part{thinWallParts.length === 1 ? '' : 's'} may be too thin to print (&lt; {THIN_WALL_THRESHOLD_MM}mm).
+                Scale up, reduce clearance, or simplify the SVG.
+              </div>
+              <button
+                type="button"
+                onClick={handleSelectThinParts}
+                style={{ fontSize: '0.7rem', padding: '4px 8px', borderRadius: '4px', border: '1px solid #fbbf24', background: 'transparent', color: '#fbbf24', cursor: 'pointer' }}
+              >
+                Select thin parts
+              </button>
+            </div>
+          )}
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginBottom: '1rem' }}>
+            <label className="checkbox-label" style={{ fontSize: '0.75rem' }}>
+              <input type="checkbox" checked={scaleZProportionally} onChange={(e) => setScaleZProportionally(e.target.checked)} />
+              Scale Depth Proportionally
+            </label>
+
+            <label className="checkbox-label" style={{ fontSize: '0.75rem' }}>
+              <input type="checkbox" checked={mergeColors3MF} onChange={(e) => setMergeColors3MF(e.target.checked)} />
+              Join objects by color for 3MF
+            </label>
+
+            <label className="checkbox-label" style={{ fontSize: '0.75rem' }}>
+              <input type="checkbox" checked={mergeBeforeExport} onChange={(e) => setMergeBeforeExport(e.target.checked)} />
+              Join objects for STL (Single Mesh)
+            </label>
+
+            <label className="checkbox-label" style={{ fontSize: '0.75rem', opacity: canPrintFaceDown ? 1 : 0.45, cursor: canPrintFaceDown ? 'pointer' : 'not-allowed' }}>
+              <input
+                type="checkbox"
+                checked={printFaceDown && canPrintFaceDown}
+                disabled={!canPrintFaceDown}
+                onChange={(e) => setPrintFaceDown(e.target.checked)}
+              />
+              Print face down
+            </label>
+            {!canPrintFaceDown && (
+              <span style={{ fontSize: '0.65rem', color: '#94a3b8', marginTop: '-0.25rem', paddingLeft: '1.5rem' }}>
+                Only available when all faces share the same height
+              </span>
+            )}
+
+            <p style={{ fontSize: '0.65rem', color: '#94a3b8', margin: '0.25rem 0 0', lineHeight: 1.4 }}>
+              For cleaner slicer results: keep <strong style={{ color: '#cbd5e1' }}>Cut overlaps</strong> on when loading.
+              Seal Gaps is a preview bevel only and is not applied to 3MF export.
+            </p>
+          </div>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', marginTop: '1.5rem' }}>
+            <button disabled={!svgUrl || !!exportStatus} style={{ width: '100%', backgroundColor: '#ec4899', color: 'white', border: 'none', padding: '10px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '6px' }} onClick={handleExport3MF}>
+              <Download size={16} /> Export 3MF (Multi-Plate)
+            </button>
+            <button disabled={!svgUrl} style={{ width: '100%', backgroundColor: '#475569', color: 'white', border: 'none', padding: '8px', borderRadius: '6px', cursor: 'pointer', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '6px', fontSize: '0.85rem' }} onClick={handleExportSTL}>
+              <Download size={14} /> Export STL (Raw)
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
