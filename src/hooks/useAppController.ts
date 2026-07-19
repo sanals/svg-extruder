@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import { type SvgModelRef } from '../components/SvgModel';
 import { useHistory } from './useHistory';
 import { exportToSTL } from '../lib/export-utils';
-import { computeAutoExtrudeDepths, calculateLineArtParams, generateSVGFromShapes } from '../lib/app-logic';
+import { computeAutoExtrudeDepths, calculateLineArtParams, generateSVGFromShapes, LINE_ART_DEPTH } from '../lib/app-logic';
 import { prepareCanvasForVtracer, quantizePreparedImage, snapSvgColorsToPalette } from '../lib/image-preprocess';
 import { sealAndStraightenSvg } from '../lib/svg-path-cleanup';
 import { mergeSvgFills, normalizeSvgForPreview } from '../lib/svg-preview';
@@ -195,7 +195,7 @@ export function useAppController() {
     if (allShapes.length === 0) return;
     pushToHistory();
 
-    const { newDepths, newColors, lightShapeIds, darkShapeIds, targetWidth } = calculateLineArtParams(allShapes, meshColorOverrides, borderWidth);
+    const { newDepths, newColors, lightShapeIds, darkShapeIds, targetWidth } = calculateLineArtParams(allShapes, meshColorOverrides, lineArtWidth);
 
     setIsBordering(true);
     setBorderStatus("Generating uniform line art...");
@@ -204,7 +204,7 @@ export function useAppController() {
       const newIds = await svgModelRef.current.generateUniformLineArt(targetWidth, lightShapeIds, darkShapeIds, (msg: string) => setBorderStatus(msg));
       if (newIds && newIds.length > 0) {
         newIds.forEach(id => {
-          newDepths[id] = 3;
+          newDepths[id] = LINE_ART_DEPTH;
           newColors[id] = '000000';
         });
       }
@@ -378,6 +378,8 @@ export function useAppController() {
 
   const [isBordering, setIsBordering] = useState(false);
   const [borderWidth, setBorderWidth] = useState(2.0);
+  /** Thickness for LeftPanel Line Art (independent of Create Border). */
+  const [lineArtWidth, setLineArtWidth] = useState(2.0);
   const [borderMode, setBorderMode] = useState<'inner' | 'outer' | 'both' | 'custom'>('outer');
   const [customBorderColor, setCustomBorderColor] = useState<string | null>(null);
   const [adjacentColors, setAdjacentColors] = useState<string[]>([]);
@@ -1151,7 +1153,7 @@ export function useAppController() {
     isAbsorbingShards, setIsAbsorbingShards, isSplitting, setIsSplitting, splitStatus, setSplitStatus,
     isExpanding, setIsExpanding, expandAmount, setExpandAmount, expandStatus, setExpandStatus,
     isSmoothing, setIsSmoothing, smoothAmount, setSmoothAmount, smoothStatus, setSmoothStatus,
-    isBordering, setIsBordering, borderWidth, setBorderWidth, borderMode, setBorderMode,
+    isBordering, setIsBordering, borderWidth, setBorderWidth, lineArtWidth, setLineArtWidth, borderMode, setBorderMode,
     customBorderColor, setCustomBorderColor, adjacentColors,
     borderStatus, setBorderStatus, handlePreviewShards, confirmAbsorbShards,
     handleSplitDisjoint, handleExtractInner, handleCreateBasePlate, inheritProperties,

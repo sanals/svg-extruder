@@ -90,6 +90,8 @@ function App() {
     smoothStatus,
     isBordering,
     borderWidth,
+    lineArtWidth,
+    setLineArtWidth,
     borderMode,
     customBorderColor,
     adjacentColors,
@@ -192,6 +194,8 @@ function App() {
           uniqueColors={uniqueColors}
           handleAutoExtrude={handleAutoExtrude}
           handleConvertToLineArt={handleConvertToLineArt}
+          lineArtWidth={lineArtWidth}
+          setLineArtWidth={setLineArtWidth}
           imageDataUrl={imageDataUrl}
           colorCount={colorCount}
           handleColorCountChange={handleColorCountChange}

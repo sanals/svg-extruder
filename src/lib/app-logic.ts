@@ -60,7 +60,9 @@ export const computeAutoExtrudeDepths = (allShapes: ShapeItem[], meshColorOverri
   return newDepths;
 };
 
-export const calculateLineArtParams = (allShapes: ShapeItem[], meshColorOverrides: Record<string, string>, borderWidth: number) => {
+export const LINE_ART_DEPTH = 2;
+
+export const calculateLineArtParams = (allShapes: ShapeItem[], meshColorOverrides: Record<string, string>, lineArtWidth: number) => {
   const colorSet = Array.from(new Set(allShapes.map(s => meshColorOverrides[s.id] ?? s.colorHex)));
   colorSet.sort((a, b) => getLuminance(b) - getLuminance(a));
   const darkestColor = colorSet[colorSet.length - 1];
@@ -71,7 +73,8 @@ export const calculateLineArtParams = (allShapes: ShapeItem[], meshColorOverride
   const newColors: Record<string, string> = {};
   const lightShapeIds: string[] = [];
   const darkShapeIds: string[] = [];
-  const outlineThicknesses: number[] = [];
+
+  const targetWidth = Math.min(20, Math.max(0.5, lineArtWidth));
 
   allShapes.forEach(s => {
     const effectiveColor = meshColorOverrides[s.id] ?? s.colorHex;
@@ -83,33 +86,19 @@ export const calculateLineArtParams = (allShapes: ShapeItem[], meshColorOverride
 
     const isStroke = minThickness < 15;
 
+    // Flat dual-material line art: same extrusion height for light and dark.
+    newDepths[s.id] = LINE_ART_DEPTH;
+
     if (darkColors.has(effectiveColor) || isStroke) {
-      newDepths[s.id] = 3;
       newColors[s.id] = '000000';
       darkShapeIds.push(s.id);
-
-      if (isStroke) {
-        s.shapes.forEach(shape => {
-          if (shape.holes.length > 0) outlineThicknesses.push(calculateThinness(shape));
-        });
-      }
     } else {
-      newDepths[s.id] = 1;
       newColors[s.id] = 'ffffff';
       lightShapeIds.push(s.id);
     }
   });
 
-  let targetWidth = borderWidth;
-  if (outlineThicknesses.length > 0) {
-    outlineThicknesses.sort((a, b) => a - b);
-    const medianThickness = outlineThicknesses[Math.floor(outlineThicknesses.length / 2)];
-    if (medianThickness > 0 && medianThickness < 30) {
-      targetWidth = medianThickness;
-    }
-  }
-
-  return { newDepths, newColors, lightShapeIds, darkShapeIds, targetWidth };
+  return { newDepths, newColors, lightShapeIds, darkShapeIds, targetWidth, uniformDepth: LINE_ART_DEPTH };
 };
 
 export const generateSVGFromShapes = (shapesData: ShapeItem[], meshColorOverrides: Record<string, string>) => {

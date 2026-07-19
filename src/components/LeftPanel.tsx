@@ -18,6 +18,8 @@ export interface LeftPanelProps {
   uniqueColors: string[];
   handleAutoExtrude: () => void;
   handleConvertToLineArt: () => void;
+  lineArtWidth: number;
+  setLineArtWidth: (v: number) => void;
   imageDataUrl: string | null;
   colorCount: number;
   handleColorCountChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
@@ -64,6 +66,7 @@ export const LeftPanel: React.FC<LeftPanelProps> = (props) => {
     handleLoadProject, handleSaveProject, rawSvgContent, handleFileUpload, svgUrl,
     pipelinePhase, previewSvgUrl, handlePromoteTo3D, handleBackToSvgPreview, handleMergeSvgFills,
     generateSVGFromCurrentShapes, uniqueColors, handleAutoExtrude, handleConvertToLineArt,
+    lineArtWidth, setLineArtWidth,
     imageDataUrl, colorCount, handleColorCountChange, tracerId, tracerBackends, handleTracerChange,
     vtracerPreset, handleVtracerPresetChange,
     vtracerFilterSpeckle, handleVtracerFilterSpeckleChange,
@@ -223,6 +226,21 @@ export const LeftPanel: React.FC<LeftPanelProps> = (props) => {
                 >
                   <Palette size={14} /> Line Art
                 </button>
+              </div>
+              <div style={{ marginTop: '0.4rem' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', color: '#94a3b8', marginBottom: '0.2rem' }}>
+                  <label htmlFor="line-art-width">Line thickness</label>
+                  <span>{lineArtWidth.toFixed(1)}</span>
+                </div>
+                <HoverSlider
+                  id="line-art-width"
+                  min={0.5}
+                  max={20}
+                  step={0.1}
+                  value={lineArtWidth}
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setLineArtWidth(parseFloat(e.target.value))}
+                  displayFormat={(v: number) => v.toFixed(1)}
+                />
               </div>
             </>
           )}
