@@ -1,9 +1,50 @@
 import type { ShapeItem, Polygon, MultiPolygon, Ring, Pair } from '../types';
-import { shapeToPolygon, multiPolygonToShapes } from '../lib/clipper-utils';
+import { shapeToPolygon, multiPolygonToShapes, performClipperBoolean } from '../lib/clipper-utils';
+import {
+  FUSE_UNION_BATCH_SIZE,
+  FUSE_YIELD_EVERY_PARTS,
+  throwIfExportAborted,
+  yieldExportThread,
+} from '../lib/export-constants';
 import * as THREE from 'three';
 import * as ClipperLib from 'clipper-lib';
 
-const yieldThread = () => new Promise(r => requestAnimationFrame(() => setTimeout(r, 0)));
+const yieldThread = () => yieldExportThread();
+
+async function unionMultiPolysBatched(
+  polys: MultiPolygon[],
+  batchSize: number,
+  onProgress: (msg: string) => void,
+  signal?: AbortSignal,
+): Promise<MultiPolygon> {
+  if (polys.length === 0) return [];
+  if (polys.length === 1) return polys[0];
+
+  // Tree reduction always needs exactly (n - 1) pairwise unions.
+  const totalSteps = polys.length - 1;
+  let step = 0;
+  let current = polys;
+
+  while (current.length > 1) {
+    throwIfExportAborted(signal);
+    const next: MultiPolygon[] = [];
+    for (let i = 0; i < current.length; i += batchSize) {
+      throwIfExportAborted(signal);
+      const batch = current.slice(i, i + batchSize);
+      let acc = batch[0];
+      for (let j = 1; j < batch.length; j++) {
+        acc = performClipperBoolean(acc, [batch[j]], ClipperLib.ClipType.ctUnion);
+        step += 1;
+        onProgress(`Uniting polygons (${step}/${totalSteps})...`);
+        await yieldThread();
+        throwIfExportAborted(signal);
+      }
+      next.push(acc);
+    }
+    current = next;
+  }
+  return current[0];
+}
 
 export async function extractInnerParts(
   shapesWithColors: ShapeItem[],
@@ -680,23 +721,32 @@ export async function fuseSelected(
   targetColorHex: string,
   forceMergeAll: boolean,
   meshColorOverrides: Record<string, string>,
-  onProgress: (msg: string) => void
+  onProgress: (msg: string) => void,
+  signal?: AbortSignal,
 ): Promise<{ updatedShapes: ShapeItem[], newIds: string[] } | null> {
   const itemsToFuse = shapesWithColors.filter(item => idsToFuse.includes(item.id) && item.shapes.length > 0);
   if (itemsToFuse.length === 0) return null;
 
-  onProgress(forceMergeAll ? "Absorbing shards into main shape..." : "Extracting geometry...");
+  const totalParts = itemsToFuse.length;
+  onProgress(forceMergeAll ? "Absorbing shards into main shape..." : `Extracting geometry (0/${totalParts} parts)...`);
   await yieldThread();
+  throwIfExportAborted(signal);
 
-  const scale = 10000;
-  const clipper = new ClipperLib.Clipper();
-  
-  const unconsumedItems = new Set<{id: string, area: number, bounds: THREE.Box2, item: any}>();
-  itemsToFuse.forEach(item => {
+  const unconsumedItems = new Set<{id: string, area: number, bounds: THREE.Box2, item: ShapeItem}>();
+  const partPolys: MultiPolygon[] = [];
+
+  for (let partIndex = 0; partIndex < itemsToFuse.length; partIndex++) {
+    const item = itemsToFuse[partIndex];
+    if (partIndex % FUSE_YIELD_EVERY_PARTS === 0) {
+      onProgress(`Extracting geometry (${partIndex}/${totalParts} parts)...`);
+      await yieldThread();
+      throwIfExportAborted(signal);
+    }
+
     let totalArea = 0;
     let bounds = new THREE.Box2();
     let hasBounds = false;
-    
+
     item.shapes.forEach(shape => {
       const points = shape.getPoints();
       if (points.length > 2) {
@@ -712,82 +762,52 @@ export async function fuseSelected(
         const hPoints = hole.getPoints();
         if (hPoints.length > 2) totalArea -= THREE.ShapeUtils.area(hPoints);
       });
-      
-      const polygon = shapeToPolygon(shape);
-      for (let i = 0; i < polygon.length; i++) {
-         const ring = polygon[i];
-         if (ring.length < 3) continue;
-         const clipperPath = ring.map(p => ({ X: Math.round(p[0] * scale), Y: Math.round(p[1] * scale) }));
-         const isOuter = (i === 0);
-         if (isOuter !== ClipperLib.Clipper.Orientation(clipperPath)) clipperPath.reverse();
-         // @ts-ignore
-         clipper.AddPath(clipperPath, ClipperLib.PolyType.ptSubject, true);
-      }
+
+      partPolys.push([shapeToPolygon(shape)]);
     });
-    
+
     unconsumedItems.add({ id: item.id, item, area: Math.abs(totalArea), bounds });
-  });
+  }
 
-  onProgress("Mathematically fusing shapes...");
+  onProgress(`Extracting geometry (${totalParts}/${totalParts} parts)...`);
   await yieldThread();
+  throwIfExportAborted(signal);
 
-  // @ts-ignore
-  const solutionTree = new ClipperLib.PolyTree();
-  // @ts-ignore
-  clipper.Execute(ClipperLib.ClipType.ctUnion, solutionTree, ClipperLib.PolyFillType.pftNonZero, ClipperLib.PolyFillType.pftNonZero);
+  const solutionMultiPoly = await unionMultiPolysBatched(
+    partPolys,
+    FUSE_UNION_BATCH_SIZE,
+    onProgress,
+    signal,
+  );
 
   onProgress("Rebuilding fused meshes...");
   await yieldThread();
-
-  const parsePolyNode = (node: any, multiPoly: MultiPolygon) => {
-    if (!node.IsHole()) {
-      const ring: Ring = node.Contour().map((p: any) => [p.X / scale, p.Y / scale]);
-      if (ring.length > 0 && (ring[0][0] !== ring[ring.length - 1][0] || ring[0][1] !== ring[ring.length - 1][1])) ring.push([...ring[0]]);
-
-      if (ring.length >= 4) {
-        const poly = [ring];
-        node.Childs().forEach((child: any) => {
-          const holeRing: Ring = child.Contour().map((p: any) => [p.X / scale, p.Y / scale]);
-          if (holeRing.length > 0 && (holeRing[0][0] !== holeRing[holeRing.length - 1][0] || holeRing[0][1] !== holeRing[holeRing.length - 1][1])) holeRing.push([...holeRing[0]]);
-          if (holeRing.length >= 4) poly.push(holeRing);
-
-          child.Childs().forEach((nestedNode: any) => parsePolyNode(nestedNode, multiPoly));
-        });
-        multiPoly.push(poly);
-      }
-    }
-  };
+  throwIfExportAborted(signal);
 
   const newIds: string[] = [];
   const newItems: ShapeItem[] = [];
   const targetItem = itemsToFuse.find(i => (meshColorOverrides[i.id] || i.colorHex) === targetColorHex) || itemsToFuse[0];
+  const islandCount = solutionMultiPoly.length;
 
   if (forceMergeAll) {
-     const allShapes: THREE.Shape[] = [];
-     // @ts-ignore
-     solutionTree.Childs().forEach((child: any) => {
-        const individualMultiPoly: MultiPolygon = [];
-        parsePolyNode(child, individualMultiPoly);
-        allShapes.push(...multiPolygonToShapes(individualMultiPoly));
-     });
-
-     if (allShapes.length > 0) {
-        const id = `fused_${Date.now()}_force`;
-        newIds.push(id);
-        newItems.push({ id, color: targetItem.color, colorHex: targetColorHex, shapes: allShapes });
-     }
-     unconsumedItems.clear();
+    const allShapes = multiPolygonToShapes(solutionMultiPoly);
+    if (allShapes.length > 0) {
+      const id = `fused_${Date.now()}_force`;
+      newIds.push(id);
+      newItems.push({ id, color: targetItem.color, colorHex: targetColorHex, shapes: allShapes });
+    }
+    unconsumedItems.clear();
   } else {
-    // @ts-ignore
-    solutionTree.Childs().forEach((child: any, childIndex: number) => {
-      const individualMultiPoly: MultiPolygon = [];
-      parsePolyNode(child, individualMultiPoly);
-      const shapes = multiPolygonToShapes(individualMultiPoly);
-      
+    solutionMultiPoly.forEach((poly, childIndex) => {
+      if (childIndex > 0 && childIndex % FUSE_YIELD_EVERY_PARTS === 0) {
+        onProgress(`Rebuilding fused meshes (${childIndex}/${islandCount} islands)...`);
+      }
+      const shapes = multiPolygonToShapes([poly]);
+
       let childArea = 0;
       let childBounds = new THREE.Box2();
       let hasBounds = false;
-      
+
       shapes.forEach(shape => {
         const points = shape.getPoints();
         if (points.length > 2) {
@@ -804,12 +824,12 @@ export async function fuseSelected(
           if (hPoints.length > 2) childArea -= THREE.ShapeUtils.area(hPoints);
         });
       });
-      
+
       childArea = Math.abs(childArea);
-      
+
       let matchedIsolatedItem = null;
       const expandedChildBounds = childBounds.clone().expandByScalar(0.01);
-      
+
       for (const unconsumed of Array.from(unconsumedItems)) {
         if (expandedChildBounds.intersectsBox(unconsumed.bounds)) {
           const diffRatio = Math.abs(unconsumed.area - childArea) / Math.max(unconsumed.area, 0.00001);
@@ -819,9 +839,9 @@ export async function fuseSelected(
           }
         }
       }
-      
+
       if (matchedIsolatedItem) {
-         unconsumedItems.delete(matchedIsolatedItem);
+        unconsumedItems.delete(matchedIsolatedItem);
       } else {
         const id = `fused_${Date.now()}_${childIndex}_${Math.random().toString(36).substring(2, 6)}`;
         newIds.push(id);

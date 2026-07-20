@@ -159,6 +159,7 @@ function App() {
     executeFuse,
     handleExport3MF,
     handleCancelExport,
+    handleCancelFuse,
     handlePreviewShards,
     confirmAbsorbShards,
     handleSplitDisjoint,
@@ -285,6 +286,24 @@ function App() {
                   }}
                 >
                   Cancel export
+                </button>
+              )}
+              {!exportStatus && fuseStatus && (
+                <button
+                  type="button"
+                  onClick={handleCancelFuse}
+                  style={{
+                    marginTop: '1.25rem',
+                    padding: '8px 16px',
+                    borderRadius: '6px',
+                    border: '1px solid #64748b',
+                    background: 'transparent',
+                    color: '#e2e8f0',
+                    cursor: 'pointer',
+                    fontSize: '0.85rem',
+                  }}
+                >
+                  Cancel fuse
                 </button>
               )}
               <style>{`@keyframes spin { 100% { transform: rotate(360deg); } }`}</style>

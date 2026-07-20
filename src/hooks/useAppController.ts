@@ -22,7 +22,7 @@ import {
 } from '../lib/geometry-ops';
 import { loadSvgToShapes } from '../lib/load-svg';
 import { getShapeAreas } from '../lib/shape-areas';
-import { EXPORT_VERTEX_SOFT_LIMIT, EXPORT_VERTEX_HARD_LIMIT } from '../lib/export-constants';
+import { EXPORT_VERTEX_SOFT_LIMIT, EXPORT_VERTEX_HARD_LIMIT, yieldExportThread } from '../lib/export-constants';
 import {
   estimateExportScaleFactor,
   findThinWallPartsAsync,
@@ -125,6 +125,7 @@ export function useAppController() {
 
   const sceneRef = useRef<THREE.Group>(null);
   const exportAbortRef = useRef<AbortController | null>(null);
+  const fuseAbortRef = useRef<AbortController | null>(null);
   const pipelinePhaseRef = useRef<PipelinePhase>('idle');
 
   const applyShapeOpResult = useCallback((result: { updatedShapes: ShapeItem[]; newIds: string[] } | null): string[] | null => {
@@ -444,33 +445,53 @@ export function useAppController() {
     setIsMerging(false);
     if (shapes.length === 0) return;
 
+    // forceMergeAll stays false here — same-color bulk merge is Step 8.
     pushToHistory();
+    const abortController = new AbortController();
+    fuseAbortRef.current = abortController;
     setFuseStatus("Initializing fusion...");
-    await new Promise(r => requestAnimationFrame(() => setTimeout(r, 0)));
+    await yieldExportThread();
 
-    const maxDepth = Math.max(0, ...selectedMeshIds.map(id => meshDepths[id] ?? 0));
-    const result = await fuseSelected(shapes, selectedMeshIds, targetColorHex, false, meshColorOverrides, (msg: string) => {
-      setFuseStatus(msg);
-    });
-    const newIds = applyShapeOpResult(result);
+    try {
+      const maxDepth = Math.max(0, ...selectedMeshIds.map(id => meshDepths[id] ?? 0));
+      const result = await fuseSelected(
+        shapes,
+        selectedMeshIds,
+        targetColorHex,
+        false,
+        meshColorOverrides,
+        (msg: string) => setFuseStatus(msg),
+        abortController.signal,
+      );
+      const newIds = applyShapeOpResult(result);
 
-    if (newIds && newIds.length > 0) {
-      setMeshDepths(prev => {
-        const next = { ...prev };
-        newIds.forEach(id => { next[id] = maxDepth; });
-        return next;
-      });
-      setMeshColorOverrides(prev => {
-        const next = { ...prev };
-        newIds.forEach(id => {
-          next[id] = targetColorHex;
+      if (newIds && newIds.length > 0) {
+        setMeshDepths(prev => {
+          const next = { ...prev };
+          newIds.forEach(id => { next[id] = maxDepth; });
+          return next;
         });
-        return next;
-      });
-      setSelectedMeshIds([...newIds]);
+        setMeshColorOverrides(prev => {
+          const next = { ...prev };
+          newIds.forEach(id => {
+            next[id] = targetColorHex;
+          });
+          return next;
+        });
+        setSelectedMeshIds([...newIds]);
+        setFuseStatus(null);
+      } else {
+        setFuseStatus('Nothing to fuse — parts may not touch.');
+        window.setTimeout(() => setFuseStatus(null), 2500);
+      }
+    } catch (e) {
+      if (e instanceof ExportAbortError) return;
+      console.error('Fuse failed', e);
+      alert('Failed to fuse parts.');
+      setFuseStatus(null);
+    } finally {
+      fuseAbortRef.current = null;
     }
-
-    setFuseStatus(null);
   };
   
   const initiateFuse = () => {
@@ -553,6 +574,11 @@ export function useAppController() {
   const handleCancelExport = useCallback(() => {
     exportAbortRef.current?.abort();
     setExportStatus(null);
+  }, []);
+
+  const handleCancelFuse = useCallback(() => {
+    fuseAbortRef.current?.abort();
+    setFuseStatus(null);
   }, []);
 
   const handleExportSTLAction = async () => {
@@ -684,11 +710,23 @@ export function useAppController() {
     const targetColorHex = selectedUniqueColors[0] || "000000";
     const idsToAbsorb = Object.entries(pendingShards).filter(([colorHex]) => !ignoredShardColors.includes(colorHex)).flatMap(([_, ids]) => ids);
     if (idsToAbsorb.length > 0) {
-      pushToHistory(); setIsAbsorbingShards(true); setFuseStatus("Fusing shards...");
+      pushToHistory();
+      setIsAbsorbingShards(true);
+      const abortController = new AbortController();
+      fuseAbortRef.current = abortController;
+      setFuseStatus("Fusing shards...");
       try {
         const allIdsToFuse = [...new Set([...selectedMeshIds, ...idsToAbsorb])];
         const maxDepth = Math.max(0, ...allIdsToFuse.map(id => meshDepths[id] ?? 0));
-        const result = await fuseSelected(shapes, allIdsToFuse, targetColorHex, true, meshColorOverrides, (msg: string) => setFuseStatus(msg));
+        const result = await fuseSelected(
+          shapes,
+          allIdsToFuse,
+          targetColorHex,
+          true,
+          meshColorOverrides,
+          (msg: string) => setFuseStatus(msg),
+          abortController.signal,
+        );
         const newIds = applyShapeOpResult(result);
         if (newIds && newIds.length > 0) {
           setMeshDepths(prev => {
@@ -703,7 +741,13 @@ export function useAppController() {
           });
           setSelectedMeshIds(newIds);
         }
-      } catch (e) { alert("Failed to fuse shards."); } finally { setIsAbsorbingShards(false); setFuseStatus(null); }
+      } catch (e) {
+        if (!(e instanceof ExportAbortError)) alert("Failed to fuse shards.");
+      } finally {
+        fuseAbortRef.current = null;
+        setIsAbsorbingShards(false);
+        setFuseStatus(null);
+      }
     }
     setPendingShards(null); setIgnoredShardColors([]);
   };
@@ -1447,7 +1491,7 @@ export function useAppController() {
     shapes,
     currentMeshColors, uniqueColors, selectedUniqueColors, toggleColorSelection, removeColorFromSelection,
     getColorDistance, handleAutoSelectSimilar, handleAutoExtrude, handleConvertToLineArt,
-    initiateFuse, executeFuse, executeMergeColors, handleExport3MF, handleCancelExport, handleExportSTLAction,
+    initiateFuse, executeFuse, executeMergeColors, handleExport3MF, handleCancelExport, handleCancelFuse, handleExportSTLAction,
     generateSVGFromCurrentShapes, handleSaveProject, handleLoadProject,
     pendingShards, setPendingShards, ignoredShardColors, setIgnoredShardColors,
     isAbsorbingShards, setIsAbsorbingShards, isSplitting, setIsSplitting, splitStatus, setSplitStatus,
