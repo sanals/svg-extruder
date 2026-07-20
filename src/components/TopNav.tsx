@@ -5,6 +5,7 @@ import { HoverSlider } from './HoverSlider';
 interface TopNavProps {
   selectedMeshIds: string[];
   currentDepth: number;
+  isDepthMixed: boolean;
   handleDepthChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
   handleDepthPointerDown: () => void;
   setShowExportOptions: (show: boolean) => void;
@@ -18,6 +19,7 @@ interface TopNavProps {
 export const TopNav: React.FC<TopNavProps> = ({
   selectedMeshIds,
   currentDepth,
+  isDepthMixed,
   handleDepthChange,
   handleDepthPointerDown,
   setShowExportOptions,
@@ -37,7 +39,13 @@ export const TopNav: React.FC<TopNavProps> = ({
           <div style={{ flex: 1, padding: '0 0.5rem' }}>
               <HoverSlider id="depth-slider" min={0} max={20} step={0.1} value={currentDepth} onChange={handleDepthChange} onPointerDown={handleDepthPointerDown} disabled={selectedMeshIds.length === 0} displayFormat={(val) => `${val.toFixed(1)} mm`} />
           </div>
-          <span style={{ fontSize: '1.1rem', fontWeight: 700, color: '#f8fafc', whiteSpace: 'nowrap', width: '60px', textAlign: 'right' }}>{currentDepth.toFixed(1)} <span style={{fontSize: '0.7rem', color: '#94a3b8', fontWeight: 'normal'}}>mm</span></span>
+          <span style={{ fontSize: '1.1rem', fontWeight: 700, color: '#f8fafc', whiteSpace: 'nowrap', width: '60px', textAlign: 'right' }}>
+            {isDepthMixed ? (
+              <span style={{ fontSize: '0.85rem', color: '#94a3b8' }}>Mixed</span>
+            ) : (
+              <>{currentDepth.toFixed(1)} <span style={{fontSize: '0.7rem', color: '#94a3b8', fontWeight: 'normal'}}>mm</span></>
+            )}
+          </span>
         </div>
       )}
 

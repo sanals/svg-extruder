@@ -166,6 +166,7 @@ function App() {
     handleSmoothSelected,
     handleCreateBorder,
     currentDepth,
+    isDepthMixed,
     currentMeshColors,
     uniqueColors,
     selectedUniqueColors,
@@ -180,6 +181,7 @@ function App() {
       <TopNav
         selectedMeshIds={selectedMeshIds}
         currentDepth={currentDepth}
+        isDepthMixed={isDepthMixed}
         handleDepthChange={handleDepthChange}
         handleDepthPointerDown={handleDepthPointerDown}
         setShowExportOptions={setShowExportOptions}
