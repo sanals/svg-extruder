@@ -74,7 +74,7 @@ const lightStripeTexture = createStripeTexture('rgba(255, 255, 255, 0.4)');
 const darkStripeTexture = createStripeTexture('rgba(0, 0, 0, 0.4)');
 
 export const SvgModel = forwardRef<SvgModelRef, SvgModelProps>(({
-  svgUrl, sealGaps = true, cutOverlaps = false, highlightStyle = 'dashed',
+  svgUrl, sealGaps = true, cutOverlaps = false, highlightStyle = 'solid',
   backingDepth = 0, selectedMeshIds, meshDepths, meshColorOverrides,
   onSelect, onVerticesCalculated, onParseProgress, onParseComplete, onInitialLoadComplete, previewMeshIds = []
 }, ref) => {
@@ -284,11 +284,12 @@ export const SvgModel = forwardRef<SvgModelRef, SvgModelProps>(({
               />
             </mesh>
 
-            {isSelected && highlightStyle === 'solid' && (
+            {(isSelected || isHovered) && highlightStyle === 'solid' && (
               <mesh geometry={geometry} position={[0, 0, visualDepth + zPosition + 0.1]}>
                 <meshBasicMaterial
                   map={stripeTexture}
                   transparent={true}
+                  opacity={isSelected ? 1 : 0.38}
                   depthTest={false}
                   side={THREE.DoubleSide}
                 />
@@ -297,9 +298,10 @@ export const SvgModel = forwardRef<SvgModelRef, SvgModelProps>(({
 
             {(isSelected || isHovered) && highlightStyle === 'dashed' && (
               <DashedEdges 
-                shapes={shapesWithColors.find(s => s.id === id)!.shapes} 
-                color={isSelected ? contrastColor : "#ffffff"} 
-                depth={visualDepth + zPosition} 
+                shapes={shapesWithColors.find(s => s.id === id)!.shapes}
+                variant={isSelected ? 'selected' : 'hover'}
+                color={isSelected ? contrastColor : '#60a5fa'}
+                depth={visualDepth + zPosition}
               />
             )}
           </group>

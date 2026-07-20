@@ -1,4 +1,4 @@
-import { Suspense, useEffect } from 'react';
+import { Suspense, useEffect, useRef } from 'react';
 import { Canvas } from '@react-three/fiber';
 import { OrbitControls, Bounds, useBounds } from '@react-three/drei';
 
@@ -23,6 +23,8 @@ function AutoFit({ trigger }: { trigger: number }) {
 
 function App() {
   const ctrl = useAppController();
+  const orbitDragRef = useRef(false);
+  const suppressClickRef = useRef(false);
   const {
     svgUrl,
     previewSvgUrl,
@@ -287,7 +289,16 @@ function App() {
             <Canvas frameloop="demand" camera={{ position: [0, 0, 100], fov: 50 }} onPointerMissed={() => setSelectedMeshIds([])}>
               <ambientLight intensity={0.5} />
               <directionalLight position={[10, 10, 10]} intensity={1} castShadow />
-              <OrbitControls makeDefault />
+              <OrbitControls
+                makeDefault
+                enableDamping={false}
+                onStart={() => { orbitDragRef.current = false; }}
+                onChange={() => { orbitDragRef.current = true; }}
+                onEnd={() => {
+                  suppressClickRef.current = orbitDragRef.current;
+                  orbitDragRef.current = false;
+                }}
+              />
               <Suspense fallback={null}>
                 <Bounds fit={false} clip={false} observe={false} margin={1.2}>
                   <AutoFit trigger={fitTrigger} />
@@ -304,6 +315,10 @@ function App() {
                       meshDepths={meshDepths}
                       meshColorOverrides={meshColorOverrides}
                       onSelect={(ids, shiftKey) => {
+                        if (suppressClickRef.current) {
+                          suppressClickRef.current = false;
+                          return;
+                        }
                         setSelectedMeshIds(prev => {
                           if (shiftKey) {
                             const isAdding = !prev.includes(ids[0]);

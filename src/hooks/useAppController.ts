@@ -51,7 +51,7 @@ export function useAppController() {
 
   const [vertexCount, setVertexCount] = useState<number>(0);
   const [isTracing, setIsTracing] = useState<string | null>(null);
-  const [highlightStyle, setHighlightStyle] = useState<'dashed' | 'solid'>('dashed');
+  const [highlightStyle, setHighlightStyle] = useState<'dashed' | 'solid'>('solid');
   const [sealGaps, setSealGaps] = useState<boolean>(true);
   const [backingDepth, setBackingDepth] = useState<number>(2);
   const [cutOverlaps, setCutOverlaps] = useState<boolean>(true);
@@ -183,6 +183,7 @@ export function useAppController() {
   const handleSelectThinParts = useCallback(() => {
     if (thinWallParts.length === 0) return;
     setSelectedMeshIds(thinWallParts.map(p => p.id));
+    setShowExportOptions(false);
   }, [thinWallParts]);
 
   const colorChangeTimeout = useRef<number | null>(null);
@@ -341,6 +342,7 @@ export function useAppController() {
   const handleExport3MF = async () => {
     if (!svgModelRef.current) return;
 
+    setShowExportOptions(false);
     try {
       const zipBlob = await svgModelRef.current.sliceAndExport(
         buildPlateSize, gridSize, printerModel, mergeColors3MF, customScale / 100.0, mergeColors3MF ? 0 : clearance, scaleZProportionally,
@@ -372,6 +374,7 @@ export function useAppController() {
 
   const handleExportSTLAction = () => {
     if (!sceneRef.current) return;
+    setShowExportOptions(false);
     try {
       exportToSTL(sceneRef.current, customScale, scaleZProportionally, mergeBeforeExport, printFaceDown && canPrintFaceDown);
     } catch (e) {
@@ -422,7 +425,7 @@ export function useAppController() {
           }
           setMeshDepths(projectData.meshDepths || {});
           setMeshColorOverrides(projectData.meshColorOverrides || {}); setSelectedMeshIds(projectData.selectedMeshIds || []);
-          setHighlightStyle(projectData.highlightStyle || 'dashed'); setSealGaps(projectData.sealGaps ?? true);
+          setHighlightStyle(projectData.highlightStyle || 'solid'); setSealGaps(projectData.sealGaps ?? true);
           setBackingDepth(projectData.backingDepth ?? 2);
           setCutOverlaps(projectData.cutOverlaps ?? true);
           if (projectData.customScale) setCustomScale(projectData.customScale);
