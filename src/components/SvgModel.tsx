@@ -298,9 +298,10 @@ export const SvgModel = forwardRef<SvgModelRef, SvgModelProps>(({
 
             {(isSelected || isHovered) && highlightStyle === 'dashed' && (
               <DashedEdges 
-                shapes={shapesWithColors.find(s => s.id === id)!.shapes} 
-                color={isSelected ? contrastColor : "#ffffff"} 
-                depth={visualDepth + zPosition} 
+                shapes={shapesWithColors.find(s => s.id === id)!.shapes}
+                variant={isSelected ? 'selected' : 'hover'}
+                color={isSelected ? contrastColor : '#60a5fa'}
+                depth={visualDepth + zPosition}
               />
             )}
           </group>

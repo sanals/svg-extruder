@@ -183,6 +183,7 @@ export function useAppController() {
   const handleSelectThinParts = useCallback(() => {
     if (thinWallParts.length === 0) return;
     setSelectedMeshIds(thinWallParts.map(p => p.id));
+    setShowExportOptions(false);
   }, [thinWallParts]);
 
   const colorChangeTimeout = useRef<number | null>(null);
@@ -341,6 +342,7 @@ export function useAppController() {
   const handleExport3MF = async () => {
     if (!svgModelRef.current) return;
 
+    setShowExportOptions(false);
     try {
       const zipBlob = await svgModelRef.current.sliceAndExport(
         buildPlateSize, gridSize, printerModel, mergeColors3MF, customScale / 100.0, mergeColors3MF ? 0 : clearance, scaleZProportionally,
@@ -372,6 +374,7 @@ export function useAppController() {
 
   const handleExportSTLAction = () => {
     if (!sceneRef.current) return;
+    setShowExportOptions(false);
     try {
       exportToSTL(sceneRef.current, customScale, scaleZProportionally, mergeBeforeExport, printFaceDown && canPrintFaceDown);
     } catch (e) {
