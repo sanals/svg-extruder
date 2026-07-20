@@ -1,8 +1,26 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
+﻿import { useState, useRef, useEffect, useCallback } from 'react';
 import * as THREE from 'three';
-import { type SvgModelRef } from '../components/SvgModel';
+import type { ShapeItem } from '../types';
 import { useHistory } from './useHistory';
-import { exportShapesToSTL, areExtrusionHeightsUniform } from '../lib/export-utils';
+import {
+  exportShapesToSTL,
+  areExtrusionHeightsUniform,
+  sliceAndExport,
+} from '../lib/export-utils';
+import {
+  extractInnerParts,
+  createBasePlate,
+  absorbShards,
+  smoothSelected,
+  generateUniformLineArt,
+  expandSelected,
+  createUniformBorder,
+  splitDisjoint,
+  fuseSelected,
+  getAdjacentColors,
+} from '../lib/geometry-ops';
+import { loadSvgToShapes } from '../lib/load-svg';
+import { getShapeAreas } from '../lib/shape-areas';
 import {
   estimateExportScaleFactor,
   findThinWallParts,
@@ -37,9 +55,9 @@ export function useAppController() {
   const [colorCount, setColorCount] = useState<number>(8);
   const [tracerId, setTracerId] = useState<TracerId>(DEFAULT_TRACER_ID);
   const [vtracerPreset, setVtracerPreset] = useState<VTracerPresetId>('logo');
-  /** Print-path filter_speckle UI (area = n²). Default 12 matches prior hardcoded 144. */
+  /** Print-path filter_speckle UI (area = n┬▓). Default 12 matches prior hardcoded 144. */
   const [vtracerFilterSpeckle, setVtracerFilterSpeckle] = useState(12);
-  /** Print-path color precision bits (1–8). 0 = auto from color-count tiers. */
+  /** Print-path color precision bits (1ΓÇô8). 0 = auto from color-count tiers. */
   const [vtracerColorPrecisionBits, setVtracerColorPrecisionBits] = useState(0);
   /** Vectorize Image advanced (site UI bits / speck / path). */
   const [viColorPrecision, setViColorPrecision] = useState(6);
@@ -66,6 +84,7 @@ export function useAppController() {
   const [meshColors, setMeshColors] = useState<{ id: string, colorHex: string }[]>([]);
   const [meshColorOverrides, setMeshColorOverrides] = useState<Record<string, string>>({});
   const [meshDepths, setMeshDepths] = useState<Record<string, number>>({});
+  const [shapes, setShapes] = useState<ShapeItem[]>([]);
 
   const canPrintFaceDown = areExtrusionHeightsUniform(
     meshColors.map(m => m.id),
@@ -79,8 +98,14 @@ export function useAppController() {
   }, [canPrintFaceDown, printFaceDown]);
 
   const sceneRef = useRef<THREE.Group>(null);
-  const svgModelRef = useRef<SvgModelRef>(null);
   const pipelinePhaseRef = useRef<PipelinePhase>('idle');
+
+  const applyShapeOpResult = useCallback((result: { updatedShapes: ShapeItem[]; newIds: string[] } | null): string[] | null => {
+    if (!result) return null;
+    setShapes(result.updatedShapes);
+    setShapeAreasCache(null);
+    return result.newIds;
+  }, []);
   useEffect(() => {
     pipelinePhaseRef.current = pipelinePhase;
   }, [pipelinePhase]);
@@ -89,17 +114,18 @@ export function useAppController() {
     meshDepths: { ...meshDepths },
     meshColorOverrides: { ...meshColorOverrides },
     meshColors: [...meshColors],
-    shapes: svgModelRef.current?.getShapes(),
+    shapes: shapes.length > 0 ? shapes.map((s) => ({ ...s, shapes: [...s.shapes], color: s.color.clone() })) : undefined,
     selectedMeshIds: [...selectedMeshIds],
     rawSvgContent,
-  }), [meshDepths, meshColorOverrides, meshColors, selectedMeshIds, rawSvgContent]);
+  }), [meshDepths, meshColorOverrides, meshColors, shapes, selectedMeshIds, rawSvgContent]);
 
   const applyState = useCallback((state: any) => {
     setMeshDepths(state.meshDepths);
     setMeshColorOverrides(state.meshColorOverrides);
     setMeshColors(state.meshColors);
-    if (svgModelRef.current && state.shapes) {
-      svgModelRef.current.setShapes(state.shapes);
+    if (state.shapes) {
+      setShapes(state.shapes);
+      setShapeAreasCache(null);
     }
     if (state.selectedMeshIds) {
       setSelectedMeshIds(state.selectedMeshIds);
@@ -120,6 +146,37 @@ export function useAppController() {
   }, []);
 
   const { pushToHistory, handleUndo, handleRedo, canUndo, canRedo, clearHistory } = useHistory(getCurrentState, applyState);
+
+  useEffect(() => {
+    if (!svgUrl || pipelinePhase !== 'extrudeReady') return;
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const loaded = await loadSvgToShapes(svgUrl, {
+          cutOverlaps,
+          onProgress: (msg) => {
+            if (!cancelled) setIsTracing(msg);
+          },
+        });
+        if (cancelled) return;
+        setShapes(loaded);
+        setMeshColors(loaded.map((s) => ({ id: s.id, colorHex: s.colorHex })));
+        setShapeAreasCache(null);
+        setIsTracing(null);
+        setFitTrigger((prev) => prev + 1);
+      } catch (err) {
+        if (cancelled) return;
+        console.error('SVG load failed', err);
+        setIsTracing(null);
+        alert('Failed to parse SVG geometry.');
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [svgUrl, cutOverlaps, pipelinePhase]);
 
   const [mergeColors3MF, setMergeColors3MF] = useState<boolean>(true);
   const [isMerging, setIsMerging] = useState(false);
@@ -148,7 +205,6 @@ export function useAppController() {
     }
 
     const timer = window.setTimeout(() => {
-      const shapes = svgModelRef.current?.getShapes() ?? [];
       if (shapes.length === 0) {
         setThinWallParts([]);
         return;
@@ -171,6 +227,7 @@ export function useAppController() {
     return () => window.clearTimeout(timer);
   }, [
     showExportOptions,
+    shapes,
     buildPlateSize,
     gridSize,
     customScale,
@@ -248,27 +305,24 @@ export function useAppController() {
   };
 
   const handleAutoExtrude = () => {
-    if (!svgModelRef.current) return;
-    const allShapes = svgModelRef.current.getShapes();
-    if (allShapes.length === 0) return;
+    if (shapes.length === 0) return;
     pushToHistory();
-    const newDepths = computeAutoExtrudeDepths(allShapes, meshColorOverrides);
+    const newDepths = computeAutoExtrudeDepths(shapes, meshColorOverrides);
     setMeshDepths(prev => ({ ...prev, ...newDepths }));
   };
 
   const handleConvertToLineArt = async () => {
-    if (!svgModelRef.current) return;
-    const allShapes = svgModelRef.current.getShapes();
-    if (allShapes.length === 0) return;
+    if (shapes.length === 0) return;
     pushToHistory();
 
-    const { newDepths, newColors, lightShapeIds, darkShapeIds, targetWidth } = calculateLineArtParams(allShapes, meshColorOverrides, lineArtWidth);
+    const { newDepths, newColors, lightShapeIds, darkShapeIds, targetWidth } = calculateLineArtParams(shapes, meshColorOverrides, lineArtWidth);
 
     setIsBordering(true);
     setBorderStatus("Generating uniform line art...");
 
     try {
-      const newIds = await svgModelRef.current.generateUniformLineArt(targetWidth, lightShapeIds, darkShapeIds, (msg: string) => setBorderStatus(msg));
+      const result = await generateUniformLineArt(shapes, targetWidth, lightShapeIds, darkShapeIds, (msg: string) => setBorderStatus(msg));
+      const newIds = applyShapeOpResult(result);
       if (newIds && newIds.length > 0) {
         newIds.forEach(id => {
           newDepths[id] = LINE_ART_DEPTH;
@@ -288,16 +342,17 @@ export function useAppController() {
   const executeFuse = async (targetColorHex: string) => {
     setIsFusingSelection(false);
     setIsMerging(false);
-    if (!svgModelRef.current) return;
+    if (shapes.length === 0) return;
 
     pushToHistory();
     setFuseStatus("Initializing fusion...");
     await new Promise(r => requestAnimationFrame(() => setTimeout(r, 0)));
 
     const maxDepth = Math.max(0, ...selectedMeshIds.map(id => meshDepths[id] ?? 0));
-    const newIds = await svgModelRef.current.fuseSelected(selectedMeshIds, targetColorHex, false, (msg: string) => {
+    const result = await fuseSelected(shapes, selectedMeshIds, targetColorHex, false, meshColorOverrides, (msg: string) => {
       setFuseStatus(msg);
     });
+    const newIds = applyShapeOpResult(result);
 
     if (newIds && newIds.length > 0) {
       setMeshDepths(prev => {
@@ -340,12 +395,14 @@ export function useAppController() {
   };
 
   const handleExport3MF = async () => {
-    if (!svgModelRef.current) return;
+    if (shapes.length === 0) return;
 
     setShowExportOptions(false);
     try {
-      const zipBlob = await svgModelRef.current.sliceAndExport(
+      const zipBlob = await sliceAndExport(
+        shapes,
         buildPlateSize, gridSize, printerModel, mergeColors3MF, customScale / 100.0, mergeColors3MF ? 0 : clearance, scaleZProportionally,
+        meshDepths, sealGaps, meshColorOverrides, backingDepth,
         (msg) => setExportStatus(msg),
         printFaceDown && canPrintFaceDown,
         colorOnFaceOnly ? faceColorDepthMm : 0,
@@ -373,11 +430,10 @@ export function useAppController() {
   };
 
   const handleExportSTLAction = async () => {
-    if (!svgModelRef.current) return;
+    if (shapes.length === 0) return;
     setShowExportOptions(false);
     setExportStatus('Building STL (manifold)...');
     try {
-      const shapes = svgModelRef.current.getShapes();
       await exportShapesToSTL(
         shapes,
         customScale,
@@ -398,9 +454,8 @@ export function useAppController() {
   };
 
   const generateSVGFromCurrentShapes = () => {
-    if (!svgModelRef.current) return rawSvgContent;
-    const shapesData = svgModelRef.current.getShapes();
-    return generateSVGFromShapes(shapesData, meshColorOverrides) || rawSvgContent;
+    if (shapes.length === 0) return rawSvgContent;
+    return generateSVGFromShapes(shapes, meshColorOverrides) || rawSvgContent;
   };
 
   const handleSaveProject = () => {
@@ -479,12 +534,11 @@ export function useAppController() {
   const [borderStatus, setBorderStatus] = useState<string | null>(null);
 
   const handlePreviewShards = async () => {
-    if (selectedMeshIds.length === 0 || !svgModelRef.current) return;
+    if (selectedMeshIds.length === 0 || shapes.length === 0) return;
     setIsAbsorbingShards(true);
     try {
-      const absorbedIds = await svgModelRef.current.absorbShards(selectedMeshIds, shardSizeSlider, () => { });
+      const absorbedIds = await absorbShards(shapes, selectedMeshIds, shardSizeSlider, () => { });
       if (absorbedIds && absorbedIds.length > 0) {
-        const shapes = svgModelRef.current.getShapes();
         const shardsByColor: Record<string, string[]> = {};
         absorbedIds.forEach((id: string) => {
           const shape = shapes.find(s => s.id === id);
@@ -500,7 +554,7 @@ export function useAppController() {
   };
 
   const confirmAbsorbShards = async () => {
-    if (!pendingShards || !svgModelRef.current) return;
+    if (!pendingShards || shapes.length === 0) return;
     const targetColorHex = selectedUniqueColors[0] || "000000";
     const idsToAbsorb = Object.entries(pendingShards).filter(([colorHex]) => !ignoredShardColors.includes(colorHex)).flatMap(([_, ids]) => ids);
     if (idsToAbsorb.length > 0) {
@@ -508,7 +562,8 @@ export function useAppController() {
       try {
         const allIdsToFuse = [...new Set([...selectedMeshIds, ...idsToAbsorb])];
         const maxDepth = Math.max(0, ...allIdsToFuse.map(id => meshDepths[id] ?? 0));
-        const newIds = await svgModelRef.current.fuseSelected(allIdsToFuse, targetColorHex, true, (msg: string) => setFuseStatus(msg));
+        const result = await fuseSelected(shapes, allIdsToFuse, targetColorHex, true, meshColorOverrides, (msg: string) => setFuseStatus(msg));
+        const newIds = applyShapeOpResult(result);
         if (newIds && newIds.length > 0) {
           setMeshDepths(prev => {
             const next = { ...prev };
@@ -528,10 +583,11 @@ export function useAppController() {
   };
 
   const handleSplitDisjoint = async () => {
-    if (selectedMeshIds.length === 0 || !svgModelRef.current) return;
+    if (selectedMeshIds.length === 0 || shapes.length === 0) return;
     pushToHistory(); setIsSplitting(true); setSplitStatus("Splitting...");
     try {
-      const newIds = await svgModelRef.current.splitDisjoint(selectedMeshIds, (msg: string) => setSplitStatus(msg));
+      const result = await splitDisjoint(shapes, selectedMeshIds, meshColorOverrides, (msg: string) => setSplitStatus(msg));
+      const newIds = applyShapeOpResult(result);
       if (newIds && newIds.length > 0) {
         const avgDepth = selectedMeshIds.reduce((sum, id) => sum + (meshDepths[id] ?? 0), 0) / selectedMeshIds.length;
         setMeshDepths(prev => {
@@ -554,10 +610,11 @@ export function useAppController() {
 
 
   const handleExtractInner = async () => {
-    if (selectedMeshIds.length === 0 || !svgModelRef.current) return;
+    if (selectedMeshIds.length === 0 || shapes.length === 0) return;
     pushToHistory(); setIsExtracting(true); setExtractStatus("Extracting...");
     try {
-      const newIds = await svgModelRef.current.extractInnerParts(selectedMeshIds, (msg: string) => setExtractStatus(msg));
+      const result = await extractInnerParts(shapes, selectedMeshIds, (msg: string) => setExtractStatus(msg));
+      const newIds = applyShapeOpResult(result);
       if (newIds && newIds.length > 0) {
         inheritProperties(newIds);
         setSelectedMeshIds(newIds);
@@ -566,10 +623,11 @@ export function useAppController() {
   };
 
   const handleCreateBasePlate = async () => {
-    if (selectedMeshIds.length === 0 || !svgModelRef.current) return;
+    if (selectedMeshIds.length === 0 || shapes.length === 0) return;
     pushToHistory(); setIsBasePlating(true); setBasePlateStatus("Tracing silhouette...");
     try {
-      const newIds = await svgModelRef.current.createBasePlate(selectedMeshIds, (msg: string) => setBasePlateStatus(msg));
+      const result = await createBasePlate(shapes, selectedMeshIds, (msg: string) => setBasePlateStatus(msg));
+      const newIds = applyShapeOpResult(result);
       if (newIds && newIds.length > 0) {
         const avgDepth = selectedMeshIds.reduce((sum, id) => sum + (meshDepths[id] ?? 0), 0) / selectedMeshIds.length;
         setMeshDepths(prev => {
@@ -603,28 +661,31 @@ export function useAppController() {
   };
 
   const handleExpandSelected = async () => {
-    if (selectedMeshIds.length === 0 || !svgModelRef.current) return;
+    if (selectedMeshIds.length === 0 || shapes.length === 0) return;
     pushToHistory(); setIsExpanding(true); setExpandStatus("Expanding...");
     try {
-      const newIds = await svgModelRef.current.expandSelected(selectedMeshIds, expandAmount, (msg: string) => setExpandStatus(msg));
+      const result = await expandSelected(shapes, selectedMeshIds, expandAmount, meshColorOverrides, (msg: string) => setExpandStatus(msg));
+      const newIds = applyShapeOpResult(result);
       if (newIds) inheritProperties(newIds);
     } catch (e) { alert("Failed to expand."); } finally { setIsExpanding(false); setExpandStatus(null); }
   };
 
   const handleSmoothSelected = async () => {
-    if (selectedMeshIds.length === 0 || !svgModelRef.current) return;
+    if (selectedMeshIds.length === 0 || shapes.length === 0) return;
     pushToHistory(); setIsSmoothing(true); setSmoothStatus("Smoothing...");
     try {
-      const newIds = await svgModelRef.current.smoothSelected(selectedMeshIds, smoothAmount, (msg: string) => setSmoothStatus(msg));
+      const result = await smoothSelected(shapes, selectedMeshIds, smoothAmount, meshColorOverrides, (msg: string) => setSmoothStatus(msg));
+      const newIds = applyShapeOpResult(result);
       if (newIds) inheritProperties(newIds);
     } catch (e) { alert("Failed to smooth."); } finally { setIsSmoothing(false); setSmoothStatus(null); }
   };
 
   const handleCreateBorder = async () => {
-    if (selectedMeshIds.length === 0 || !svgModelRef.current) return;
+    if (selectedMeshIds.length === 0 || shapes.length === 0) return;
     pushToHistory(); setIsBordering(true); setBorderStatus("Creating border...");
     try {
-      const newIds = await svgModelRef.current.createUniformBorder(selectedMeshIds, borderWidth, borderMode, customBorderColor, (msg: string) => setBorderStatus(msg));
+      const result = await createUniformBorder(shapes, selectedMeshIds, borderWidth, borderMode, customBorderColor, (msg: string) => setBorderStatus(msg));
+      const newIds = applyShapeOpResult(result);
       if (newIds && newIds.length > 0) {
         const avgDepth = selectedMeshIds.reduce((sum, id) => sum + (meshDepths[id] ?? 0), 0) / selectedMeshIds.length;
         setMeshDepths(prev => {
@@ -684,7 +745,7 @@ export function useAppController() {
     let traceData: Uint8ClampedArray = rgba.data;
     let palette: Array<{ r: number; g: number; b: number }> = [];
     if (useLock) {
-      // Print path only: fringe/snap, then posterize to ≤N.
+      // Print path only: fringe/snap, then posterize to ΓëñN.
       const canvas = document.createElement('canvas');
       canvas.width = rgba.width;
       canvas.height = rgba.height;
@@ -745,7 +806,7 @@ export function useAppController() {
         });
         if (currentTraceId !== traceIdRef.current) return;
 
-        // Print: seal + snap. VI: keep raw curves, snap fills to ≤viMaxColors (no seal).
+        // Print: seal + snap. VI: keep raw curves, snap fills to ΓëñviMaxColors (no seal).
         let finalSvg = svgStr;
         if (useLock) {
           finalSvg = sealAndStraightenSvg(svgStr);
@@ -782,6 +843,7 @@ export function useAppController() {
 
         setSelectedMeshIds([]);
         setMeshDepths({});
+        setShapes([]);
         setVertexCount(0);
         clearHistory();
         setMeshColors([]);
@@ -789,7 +851,7 @@ export function useAppController() {
         setIsMerging(false);
 
         if (pipelinePhaseRef.current === 'extrudeReady') {
-          // Re-trace while already in 3D — refresh SvgModel from raw (un-normalized) SVG.
+          // Re-trace while already in 3D ΓÇö refresh SvgModel from raw (un-normalized) SVG.
           const extrudeUrl = URL.createObjectURL(blob);
           setSvgUrl((old) => {
             if (old) URL.revokeObjectURL(old);
@@ -797,7 +859,7 @@ export function useAppController() {
           });
           setIsTracing('Step 4/4: Parsing 2D Geometry...');
         } else {
-          // First convert (or preview) — show 2D SVG only until Promote.
+          // First convert (or preview) ΓÇö show 2D SVG only until Promote.
           setSvgUrl((old) => {
             if (old) URL.revokeObjectURL(old);
             return null;
@@ -831,6 +893,7 @@ export function useAppController() {
             setImageDataUrl(null);
             setSelectedMeshIds([]);
             setMeshDepths({});
+            setShapes([]);
             setVertexCount(0);
             clearHistory();
             setMeshColors([]);
@@ -932,13 +995,12 @@ export function useAppController() {
   };
 
   const handleDeleteSelected = useCallback(() => {
-    if (selectedMeshIds.length === 0 || !svgModelRef.current) return;
+    if (selectedMeshIds.length === 0 || shapes.length === 0) return;
     pushToHistory();
-    const currentShapes = svgModelRef.current.getShapes();
-    const newShapes = currentShapes.filter(item => !selectedMeshIds.includes(item.id));
-    svgModelRef.current.setShapes(newShapes);
+    setShapes(prev => prev.filter(item => !selectedMeshIds.includes(item.id)));
+    setShapeAreasCache(null);
     setSelectedMeshIds([]);
-  }, [selectedMeshIds, pushToHistory]);
+  }, [selectedMeshIds, shapes.length, pushToHistory]);
 
   const handleCustomColorChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (selectedMeshIds.length === 0) return;
@@ -1111,7 +1173,7 @@ export function useAppController() {
 
   const handlePromoteTo3D = () => {
     if (!rawSvgContent) return;
-    // Seal seams for extrusion only — Step 1 preview stays on unsealed rawSvgContent.
+    // Seal seams for extrusion only ΓÇö Step 1 preview stays on unsealed rawSvgContent.
     const sealedSvg = sealAndStraightenSvg(rawSvgContent);
     const extrudeUrl = URL.createObjectURL(new Blob([sealedSvg], { type: 'image/svg+xml' }));
     setSvgUrl((old) => {
@@ -1120,6 +1182,7 @@ export function useAppController() {
     });
     setSelectedMeshIds([]);
     setMeshDepths({});
+    setShapes([]);
     setVertexCount(0);
     clearHistory();
     setMeshColors([]);
@@ -1154,6 +1217,7 @@ export function useAppController() {
     });
     setSelectedMeshIds([]);
     setMeshDepths({});
+    setShapes([]);
     setVertexCount(0);
     setMeshColors([]);
     setMeshColorOverrides({});
@@ -1174,8 +1238,8 @@ export function useAppController() {
     setSelectSizeThreshold(val);
     let cache = shapeAreasCache;
     if (!cache) {
-      if (svgModelRef.current) {
-        cache = svgModelRef.current.getShapeAreas();
+      if (shapes.length > 0) {
+        cache = getShapeAreas(shapes);
         setShapeAreasCache(cache);
       } else {
         return;
@@ -1214,10 +1278,9 @@ export function useAppController() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [selectedMeshIds, handleDeleteSelected]);
 
-  // Handle border mode changes and custom adjacencies
   useEffect(() => {
-    if (borderMode === 'custom' && selectedMeshIds.length > 0 && svgModelRef.current) {
-      svgModelRef.current.getAdjacentColors(selectedMeshIds).then(colors => {
+    if (borderMode === 'custom' && selectedMeshIds.length > 0 && shapes.length > 0) {
+      getAdjacentColors(shapes, selectedMeshIds).then(colors => {
         setAdjacentColors(colors);
         if (colors.length > 0 && (!customBorderColor || !colors.includes(customBorderColor))) {
           setCustomBorderColor(colors[0]);
@@ -1228,7 +1291,7 @@ export function useAppController() {
     } else {
       setAdjacentColors([]);
     }
-  }, [borderMode, selectedMeshIds]);
+  }, [borderMode, selectedMeshIds, shapes]);
 
   return {
     svgUrl, setSvgUrl, previewSvgUrl, pipelinePhase, handlePromoteTo3D, handleBackToSvgPreview, handleMergeSvgFills,
@@ -1254,7 +1317,8 @@ export function useAppController() {
     thinWallParts, handleSelectThinParts,
     printerProfile, setPrinterProfile, gridSize, setGridSize, exportStatus, setExportStatus,
     customScale, setCustomScale, scaleZProportionally, setScaleZProportionally, clearance, setClearance,
-    sceneRef, svgModelRef, pushToHistory, handleUndo, handleRedo, canUndo, canRedo, clearHistory,
+    sceneRef, pushToHistory, handleUndo, handleRedo, canUndo, canRedo, clearHistory,
+    shapes,
     currentMeshColors, uniqueColors, selectedUniqueColors, toggleColorSelection, removeColorFromSelection,
     getColorDistance, handleAutoSelectSimilar, handleAutoExtrude, handleConvertToLineArt,
     initiateFuse, executeFuse, executeMergeColors, handleExport3MF, handleExportSTLAction,
