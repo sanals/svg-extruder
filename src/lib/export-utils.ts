@@ -248,12 +248,17 @@ export async function sliceAndExport(
   /**
    * Scale to mm, optional face-down flip, fix winding for odd reflections, weld in mm-space.
    * Y scale is always negative (1 reflection). Face-down adds a Z reflection → even → no winding fix.
+   * skipFaceDown: face-only stacks that are already bed-ready (color at z=0).
    */
-  const finalizeScaledGeom = (geom: THREE.BufferGeometry): THREE.BufferGeometry => {
+  const finalizeScaledGeom = (
+    geom: THREE.BufferGeometry,
+    opts?: { skipFaceDown?: boolean }
+  ): THREE.BufferGeometry => {
     applyExportScale(geom);
-    if (doFlipFaceDown) {
+    if (doFlipFaceDown && !opts?.skipFaceDown) {
       flipFaceDown(geom);
     } else {
+      // Face-up, or face-only already laid out bed-ready: only Y reflection → fix winding
       flipTriangleWinding(geom);
     }
     return hardenExportGeometry(geom, 1e-3);
@@ -262,19 +267,24 @@ export async function sliceAndExport(
   const buildScaledSolidAtZ = (
     multiPoly: MultiPolygon,
     depth: number,
-    zOffsetModel: number = 0
+    zOffsetModel: number = 0,
+    opts?: { skipFaceDown?: boolean }
   ): THREE.BufferGeometry | null => {
     const geom = extrudeMultiPolyForExport(multiPoly, depth);
     if (!geom) return null;
     if (zOffsetModel !== 0) geom.translate(0, 0, zOffsetModel);
-    return finalizeScaledGeom(geom);
+    return finalizeScaledGeom(geom, opts);
   };
 
   const buildScaledSolid = (multiPoly: MultiPolygon, totalDepth: number): THREE.BufferGeometry | null => {
     return buildScaledSolidAtZ(multiPoly, totalDepth, 0);
   };
 
-  /** One shared base + per-color thin face shells (no overlapping base bodies). */
+  /**
+   * One shared base + per-color thin face shells (no overlapping base bodies).
+   * When printFaceDown: build bed-ready Z (face at 0, body above) and skip per-mesh flipFaceDown,
+   * which would otherwise nest both meshes at z=0 and cause z-fighting.
+   */
   const buildFaceOnlyPlateItems = (parts: ClippedPart[]): PrintItem[] => {
     if (parts.length === 0 || faceDepthModel <= 0) return [];
 
@@ -282,12 +292,17 @@ export async function sliceAndExport(
     const faceD = Math.min(faceDepthModel, maxDepth);
     const bodyD = maxDepth - faceD;
     const items: PrintItem[] = [];
+    // Bed-ready layout when face-down; otherwise color on top of body
+    const bedReady = doFlipFaceDown;
+    const faceOnlyOpts = bedReady ? { skipFaceDown: true } : undefined;
+    const bodyZ = bedReady ? faceD : 0;
+    const faceZ = bedReady ? 0 : bodyD;
 
     if (bodyD > 1e-8) {
       try {
         const united = unionMultiPolygons(parts.map(p => p.multiPoly));
         if (united.length > 0) {
-          const bodyGeom = buildScaledSolidAtZ(united, bodyD, 0);
+          const bodyGeom = buildScaledSolidAtZ(united, bodyD, bodyZ, faceOnlyOpts);
           if (bodyGeom) {
             items.push({
               id: `base_${Math.random().toString(36).substring(7)}`,
@@ -304,7 +319,8 @@ export async function sliceAndExport(
           const partFace = Math.min(faceDepthModel, part.totalDepth);
           const partBody = part.totalDepth - partFace;
           if (partBody <= 1e-8 || part.multiPoly.length === 0) continue;
-          const g = buildScaledSolidAtZ(part.multiPoly, partBody, 0);
+          const partBodyZ = bedReady ? partFace : 0;
+          const g = buildScaledSolidAtZ(part.multiPoly, partBody, partBodyZ, faceOnlyOpts);
           if (g) {
             items.push({
               id: `base_${part.id}`,
@@ -328,7 +344,7 @@ export async function sliceAndExport(
       try {
         const united = unionMultiPolygons(group.map(p => p.multiPoly));
         if (united.length > 0) {
-          faceGeom = buildScaledSolidAtZ(united, faceD, bodyD);
+          faceGeom = buildScaledSolidAtZ(united, faceD, faceZ, faceOnlyOpts);
         }
       } catch (err) {
         console.error('Failed to union face color group', hex, err);
@@ -340,7 +356,8 @@ export async function sliceAndExport(
           if (part.multiPoly.length === 0) continue;
           const partFace = Math.min(faceDepthModel, part.totalDepth);
           const partBody = part.totalDepth - partFace;
-          const g = buildScaledSolidAtZ(part.multiPoly, partFace, partBody);
+          const partFaceZ = bedReady ? 0 : partBody;
+          const g = buildScaledSolidAtZ(part.multiPoly, partFace, partFaceZ, faceOnlyOpts);
           if (g) geoms.push(g);
         }
         if (geoms.length > 0) faceGeom = concatGeometries(geoms);
