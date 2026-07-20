@@ -51,7 +51,7 @@ export function useAppController() {
 
   const [vertexCount, setVertexCount] = useState<number>(0);
   const [isTracing, setIsTracing] = useState<string | null>(null);
-  const [highlightStyle, setHighlightStyle] = useState<'dashed' | 'solid'>('dashed');
+  const [highlightStyle, setHighlightStyle] = useState<'dashed' | 'solid'>('solid');
   const [sealGaps, setSealGaps] = useState<boolean>(true);
   const [backingDepth, setBackingDepth] = useState<number>(2);
   const [cutOverlaps, setCutOverlaps] = useState<boolean>(true);
@@ -422,7 +422,7 @@ export function useAppController() {
           }
           setMeshDepths(projectData.meshDepths || {});
           setMeshColorOverrides(projectData.meshColorOverrides || {}); setSelectedMeshIds(projectData.selectedMeshIds || []);
-          setHighlightStyle(projectData.highlightStyle || 'dashed'); setSealGaps(projectData.sealGaps ?? true);
+          setHighlightStyle(projectData.highlightStyle || 'solid'); setSealGaps(projectData.sealGaps ?? true);
           setBackingDepth(projectData.backingDepth ?? 2);
           setCutOverlaps(projectData.cutOverlaps ?? true);
           if (projectData.customScale) setCustomScale(projectData.customScale);

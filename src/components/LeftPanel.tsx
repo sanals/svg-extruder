@@ -550,12 +550,12 @@ export const LeftPanel: React.FC<LeftPanelProps> = (props) => {
           <div style={{ fontSize: '0.75rem', color: '#94a3b8', marginBottom: '0.25rem' }}><Droplet size={12} style={{ marginRight: '4px' }} /> Highlight Style</div>
           <div className="segmented-control">
             <label>
-              <input type="radio" name="highlightStyle" checked={highlightStyle === 'dashed'} onChange={() => setHighlightStyle('dashed')} />
-              <span>Dashed</span>
-            </label>
-            <label>
               <input type="radio" name="highlightStyle" checked={highlightStyle === 'solid'} onChange={() => setHighlightStyle('solid')} />
               <span>Striped</span>
+            </label>
+            <label>
+              <input type="radio" name="highlightStyle" checked={highlightStyle === 'dashed'} onChange={() => setHighlightStyle('dashed')} />
+              <span>Dashed</span>
             </label>
           </div>
         </div>
