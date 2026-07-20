@@ -6,6 +6,6 @@ export default defineConfig({
   plugins: [react()],
   assetsInclude: ['**/*.wasm'],
   optimizeDeps: {
-    exclude: ['vtracer-wasm'],
+    exclude: ['vtracer-wasm', 'manifold-3d'],
   },
 })

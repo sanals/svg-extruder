@@ -17,3 +17,8 @@ declare module 'vtracer-wasm/vtracer.wasm?url' {
   const wasmUrl: string;
   export default wasmUrl;
 }
+
+declare module 'manifold-3d/manifold.wasm?url' {
+  const wasmUrl: string;
+  export default wasmUrl;
+}

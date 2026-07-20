@@ -58,11 +58,12 @@ function generateMeshObjectXml(
   templateId: number,
   colorIndex: number
 ): string {
+  // Keep indexed Manifold meshes; only weld if non-indexed. Avoid toNonIndexed
+  // which re-splits verts and fights watertight topology.
   let geo = item.geometry.clone()
-  if (geo.index) {
-    geo = geo.toNonIndexed() // Flatten first to guarantee clean welding
+  if (!geo.index) {
+    geo = BufferGeometryUtils.mergeVertices(geo, 1e-3)
   }
-  geo = BufferGeometryUtils.mergeVertices(geo, 1e-3)
   if (!geo.getAttribute('normal')) {
     geo.computeVertexNormals()
   }
@@ -70,7 +71,7 @@ function generateMeshObjectXml(
   const pos = geo.getAttribute("position")
   let index = geo.getIndex()
 
-  // mergeVertices should index; if not, build sequential tris from non-indexed verts
+  // If still non-indexed, build sequential tris from verts
   if (!index && pos) {
     const triCount = Math.floor(pos.count / 3)
     const idx = new Uint32Array(triCount * 3)

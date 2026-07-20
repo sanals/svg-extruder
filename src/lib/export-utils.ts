@@ -1,10 +1,11 @@
 import { buildMultiPlate3MF } from './generic-3mf-exporter';
 import type { ShapeItem, MultiPolygon, Ring, PrintItem, PrintPlate } from '../types';
-import { shapeToPolygon, multiPolygonToShapes, performClipperBoolean } from '../lib/clipper-utils';
+import { shapeToPolygon, performClipperBoolean } from '../lib/clipper-utils';
 import * as THREE from 'three';
 import * as BufferGeometryUtils from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { STLExporter } from 'three/examples/jsm/exporters/STLExporter.js';
 import * as ClipperLib from 'clipper-lib';
+import { ensureManifoldReady, extrudeMultiPolygonManifold } from './manifold-extrude';
 
 const yieldThread = () => new Promise(r => requestAnimationFrame(() => setTimeout(r, 0)));
 
@@ -37,17 +38,13 @@ export function flipTriangleWinding(geo: THREE.BufferGeometry): void {
   pos.needsUpdate = true;
 }
 
-/** Weld verts + normals for slicer-friendly solids. Never bevel here. */
+/** Weld verts + normals for slicer-friendly solids. Never bevel here. Keeps index when present. */
 export function hardenExportGeometry(
   geo: THREE.BufferGeometry,
   /** Prefer ~1e-3 after mm-scale; ~1e-4 in raw model units. */
   weldTolerance: number = 1e-3
 ): THREE.BufferGeometry {
-  let g = geo;
-  if (g.index) {
-    g = g.toNonIndexed();
-  }
-  g = BufferGeometryUtils.mergeVertices(g, weldTolerance);
+  const g = BufferGeometryUtils.mergeVertices(geo, weldTolerance);
   g.computeVertexNormals();
   g.deleteAttribute('uv');
   return g;
@@ -70,16 +67,12 @@ export function areExtrusionHeightsUniform(
   return shapeIds.every(id => (meshDepths[id] ?? 0) === first);
 }
 
-function extrudeForExport(shapes: THREE.Shape[], totalDepth: number): THREE.BufferGeometry | null {
-  if (totalDepth <= 0) {
+function extrudeMultiPolyForExport(multiPoly: MultiPolygon, totalDepth: number): THREE.BufferGeometry | null {
+  if (totalDepth <= 0 || multiPoly.length === 0) {
     console.warn('Skipping zero-depth flat for export (open surface is not printable)');
     return null;
   }
-  return new THREE.ExtrudeGeometry(shapes, {
-    depth: totalDepth,
-    curveSegments: 32,
-    bevelEnabled: false,
-  });
+  return extrudeMultiPolygonManifold(multiPoly, totalDepth);
 }
 
 function unionMultiPolygons(multiPolys: MultiPolygon[]): MultiPolygon {
@@ -99,20 +92,12 @@ function unionMultiPolygons(multiPolys: MultiPolygon[]): MultiPolygon {
 
 function concatGeometries(geoms: THREE.BufferGeometry[]): THREE.BufferGeometry {
   if (geoms.length === 1) return geoms[0];
-  let totalPositions = 0;
-  geoms.forEach(g => {
-    totalPositions += g.getAttribute('position').count;
-  });
-  const mergedPos = new Float32Array(totalPositions * 3);
-  let offset = 0;
-  geoms.forEach(g => {
-    const pos = g.getAttribute('position');
-    mergedPos.set(pos.array as Float32Array, offset);
-    offset += pos.array.length;
-  });
-  const mergedGeo = new THREE.BufferGeometry();
-  mergedGeo.setAttribute('position', new THREE.BufferAttribute(mergedPos, 3));
-  return hardenExportGeometry(mergedGeo);
+  const merged = BufferGeometryUtils.mergeGeometries(geoms, false);
+  if (!merged) {
+    console.warn('mergeGeometries failed; returning first geometry');
+    return geoms[0];
+  }
+  return hardenExportGeometry(merged);
 }
 
 type ClippedPart = {
@@ -157,6 +142,10 @@ export async function sliceAndExport(
   const faceColorMmClamped = faceColorEnabled
     ? Math.min(1, Math.max(0.02, faceColorDepthMm))
     : 0;
+
+  onProgress("Initializing manifold engine...");
+  await ensureManifoldReady();
+  await yieldThread();
 
   onProgress("Analyzing model dimensions...");
   await yieldThread();
@@ -271,18 +260,18 @@ export async function sliceAndExport(
   };
 
   const buildScaledSolidAtZ = (
-    shapes: THREE.Shape[],
+    multiPoly: MultiPolygon,
     depth: number,
     zOffsetModel: number = 0
   ): THREE.BufferGeometry | null => {
-    const geom = extrudeForExport(shapes, depth);
+    const geom = extrudeMultiPolyForExport(multiPoly, depth);
     if (!geom) return null;
     if (zOffsetModel !== 0) geom.translate(0, 0, zOffsetModel);
     return finalizeScaledGeom(geom);
   };
 
-  const buildScaledSolid = (shapes: THREE.Shape[], totalDepth: number): THREE.BufferGeometry | null => {
-    return buildScaledSolidAtZ(shapes, totalDepth, 0);
+  const buildScaledSolid = (multiPoly: MultiPolygon, totalDepth: number): THREE.BufferGeometry | null => {
+    return buildScaledSolidAtZ(multiPoly, totalDepth, 0);
   };
 
   /** One shared base + per-color thin face shells (no overlapping base bodies). */
@@ -297,9 +286,8 @@ export async function sliceAndExport(
     if (bodyD > 1e-8) {
       try {
         const united = unionMultiPolygons(parts.map(p => p.multiPoly));
-        const shapes = multiPolygonToShapes(united);
-        if (shapes.length > 0) {
-          const bodyGeom = buildScaledSolidAtZ(shapes, bodyD, 0);
+        if (united.length > 0) {
+          const bodyGeom = buildScaledSolidAtZ(united, bodyD, 0);
           if (bodyGeom) {
             items.push({
               id: `base_${Math.random().toString(36).substring(7)}`,
@@ -313,11 +301,10 @@ export async function sliceAndExport(
         console.error('Failed to union shared base silhouette', err);
         // Fallback: per-part bodies only if union fails (worse, but better than empty)
         for (const part of parts) {
-          const shapes = multiPolygonToShapes(part.multiPoly);
           const partFace = Math.min(faceDepthModel, part.totalDepth);
           const partBody = part.totalDepth - partFace;
-          if (partBody <= 1e-8 || shapes.length === 0) continue;
-          const g = buildScaledSolidAtZ(shapes, partBody, 0);
+          if (partBody <= 1e-8 || part.multiPoly.length === 0) continue;
+          const g = buildScaledSolidAtZ(part.multiPoly, partBody, 0);
           if (g) {
             items.push({
               id: `base_${part.id}`,
@@ -340,9 +327,8 @@ export async function sliceAndExport(
       let faceGeom: THREE.BufferGeometry | null = null;
       try {
         const united = unionMultiPolygons(group.map(p => p.multiPoly));
-        const shapes = multiPolygonToShapes(united);
-        if (shapes.length > 0) {
-          faceGeom = buildScaledSolidAtZ(shapes, faceD, bodyD);
+        if (united.length > 0) {
+          faceGeom = buildScaledSolidAtZ(united, faceD, bodyD);
         }
       } catch (err) {
         console.error('Failed to union face color group', hex, err);
@@ -351,11 +337,10 @@ export async function sliceAndExport(
       if (!faceGeom) {
         const geoms: THREE.BufferGeometry[] = [];
         for (const part of group) {
-          const shapes = multiPolygonToShapes(part.multiPoly);
-          if (shapes.length === 0) continue;
+          if (part.multiPoly.length === 0) continue;
           const partFace = Math.min(faceDepthModel, part.totalDepth);
           const partBody = part.totalDepth - partFace;
-          const g = buildScaledSolidAtZ(shapes, partFace, partBody);
+          const g = buildScaledSolidAtZ(part.multiPoly, partFace, partBody);
           if (g) geoms.push(g);
         }
         if (geoms.length > 0) faceGeom = concatGeometries(geoms);
@@ -483,7 +468,7 @@ export async function sliceAndExport(
         await yieldThread();
         itemsForPlate.push(...buildFaceOnlyPlateItems(clippedParts));
       } else if (mergeByColor) {
-        onProgress("Unioning shapes by color...");
+        onProgress("Building manifold solids by color...");
         await yieldThread();
 
         const colorGroups: Record<string, ClippedPart[]> = {};
@@ -498,9 +483,8 @@ export async function sliceAndExport(
 
           try {
             const united = unionMultiPolygons(parts.map(p => p.multiPoly));
-            const shapes = multiPolygonToShapes(united);
-            if (shapes.length > 0) {
-              geom = buildScaledSolid(shapes, maxDepth);
+            if (united.length > 0) {
+              geom = buildScaledSolid(united, maxDepth);
             }
           } catch (err) {
             console.error("Failed to union geometries for color", hex, err);
@@ -509,9 +493,8 @@ export async function sliceAndExport(
           if (!geom) {
             const geoms: THREE.BufferGeometry[] = [];
             for (const part of parts) {
-              const shapes = multiPolygonToShapes(part.multiPoly);
-              if (shapes.length === 0) continue;
-              const g = buildScaledSolid(shapes, part.totalDepth);
+              if (part.multiPoly.length === 0) continue;
+              const g = buildScaledSolid(part.multiPoly, part.totalDepth);
               if (g) geoms.push(g);
             }
             if (geoms.length === 0) continue;
@@ -527,9 +510,8 @@ export async function sliceAndExport(
         }
       } else {
         for (const part of clippedParts) {
-          const shapes = multiPolygonToShapes(part.multiPoly);
-          if (shapes.length === 0) continue;
-          const geom = buildScaledSolid(shapes, part.totalDepth);
+          if (part.multiPoly.length === 0) continue;
+          const geom = buildScaledSolid(part.multiPoly, part.totalDepth);
           if (!geom) continue;
           itemsForPlate.push({
             id: part.id,
