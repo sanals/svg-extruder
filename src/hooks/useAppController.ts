@@ -21,9 +21,10 @@ import {
 } from '../lib/geometry-ops';
 import { loadSvgToShapes } from '../lib/load-svg';
 import { getShapeAreas } from '../lib/shape-areas';
+import { EXPORT_VERTEX_SOFT_LIMIT, EXPORT_VERTEX_HARD_LIMIT } from '../lib/export-constants';
 import {
   estimateExportScaleFactor,
-  findThinWallParts,
+  findThinWallPartsAsync,
   THIN_WALL_THRESHOLD_MM,
   type ThinWallPart,
 } from '../lib/thin-wall-check';
@@ -43,6 +44,30 @@ import {
 } from '../lib/tracers';
 
 export type PipelinePhase = 'idle' | 'svgPreview' | 'extrudeReady';
+
+function meshColorsFromShapes(
+  updatedShapes: ShapeItem[],
+  overrides: Record<string, string>,
+): { id: string; colorHex: string }[] {
+  return updatedShapes
+    .filter((s) => s.shapes.length > 0)
+    .map((s) => ({
+      id: s.id,
+      colorHex: overrides[s.id] ?? s.colorHex.replace(/^#/, ''),
+    }));
+}
+
+function pruneOverrides(
+  overrides: Record<string, string>,
+  updatedShapes: ShapeItem[],
+): Record<string, string> {
+  const visibleIds = new Set(updatedShapes.filter((s) => s.shapes.length > 0).map((s) => s.id));
+  const next: Record<string, string> = {};
+  for (const [id, hex] of Object.entries(overrides)) {
+    if (visibleIds.has(id)) next[id] = hex;
+  }
+  return next;
+}
 
 export function useAppController() {
   const [svgUrl, setSvgUrl] = useState<string | null>(null);
@@ -104,6 +129,11 @@ export function useAppController() {
     if (!result) return null;
     setShapes(result.updatedShapes);
     setShapeAreasCache(null);
+    setMeshColorOverrides((prev) => {
+      const next = pruneOverrides(prev, result.updatedShapes);
+      setMeshColors(meshColorsFromShapes(result.updatedShapes, next));
+      return next;
+    });
     return result.newIds;
   }, []);
   useEffect(() => {
@@ -188,6 +218,7 @@ export function useAppController() {
   const [basePlateStatus, setBasePlateStatus] = useState<string | null>(null);
   const [showExportOptions, setShowExportOptions] = useState(false);
   const [thinWallParts, setThinWallParts] = useState<ThinWallPart[]>([]);
+  const [thinWallStatus, setThinWallStatus] = useState<string | null>(null);
 
   const [printerProfile, setPrinterProfile] = useState<'A1 Mini (180x180)' | 'X1/P1/A1 (256x256)'>('X1/P1/A1 (256x256)');
   const [gridSize, setGridSize] = useState<string>("auto");
@@ -201,30 +232,64 @@ export function useAppController() {
   useEffect(() => {
     if (!showExportOptions) {
       setThinWallParts([]);
+      setThinWallStatus(null);
       return;
     }
 
-    const timer = window.setTimeout(() => {
-      if (shapes.length === 0) {
-        setThinWallParts([]);
-        return;
-      }
-      const scaleFactor = estimateExportScaleFactor({
-        shapes,
-        buildPlateSize,
-        gridSize,
-        customScale: customScale / 100.0,
-      });
-      const effectiveClearance = mergeColors3MF ? 0 : clearance;
-      const thin = findThinWallParts(shapes, {
-        scaleFactor,
-        clearanceMm: effectiveClearance,
-        thresholdMm: THIN_WALL_THRESHOLD_MM,
-      });
-      setThinWallParts(thin);
-    }, 150);
+    if (shapes.length === 0) {
+      setThinWallParts([]);
+      setThinWallStatus(null);
+      return;
+    }
 
-    return () => window.clearTimeout(timer);
+    // Dense models: skip thin-wall scan so the dialog stays responsive.
+    if (vertexCount > EXPORT_VERTEX_SOFT_LIMIT) {
+      setThinWallParts([]);
+      setThinWallStatus('Thin-wall check skipped for large models');
+      return;
+    }
+
+    let cancelled = false;
+    const abort = new AbortController();
+    setThinWallStatus('Checking thin walls...');
+    setThinWallParts([]);
+
+    const timer = window.setTimeout(() => {
+      (async () => {
+        try {
+          const scaleFactor = estimateExportScaleFactor({
+            shapes,
+            buildPlateSize,
+            gridSize,
+            customScale: customScale / 100.0,
+          });
+          const effectiveClearance = mergeColors3MF ? 0 : clearance;
+          const thin = await findThinWallPartsAsync(
+            shapes,
+            {
+              scaleFactor,
+              clearanceMm: effectiveClearance,
+              thresholdMm: THIN_WALL_THRESHOLD_MM,
+            },
+            abort.signal,
+          );
+          if (cancelled) return;
+          setThinWallParts(thin);
+          setThinWallStatus(null);
+        } catch {
+          if (!cancelled) {
+            setThinWallParts([]);
+            setThinWallStatus(null);
+          }
+        }
+      })();
+    }, 50);
+
+    return () => {
+      cancelled = true;
+      abort.abort();
+      window.clearTimeout(timer);
+    };
   }, [
     showExportOptions,
     shapes,
@@ -235,6 +300,7 @@ export function useAppController() {
     mergeColors3MF,
     meshColors,
     meshDepths,
+    vertexCount,
   ]);
 
   const handleSelectThinParts = useCallback(() => {
@@ -267,21 +333,53 @@ export function useAppController() {
   const toggleColorSelection = (colorHex: string) => {
     const idsOfColor = currentMeshColors.filter(m => m.colorHex === colorHex).map(m => m.id);
     const allSelected = idsOfColor.every(id => selectedMeshIds.includes(id));
-    if (allSelected) {
-      setSelectedMeshIds(prev => prev.filter(id => !idsOfColor.includes(id)));
-    } else {
-      setSelectedMeshIds(prev => [...new Set([...prev, ...idsOfColor])]);
+    const nextIds = allSelected
+      ? selectedMeshIds.filter(id => !idsOfColor.includes(id))
+      : [...new Set([...selectedMeshIds, ...idsOfColor])];
+    setSelectedMeshIds(nextIds);
+
+    const nextUniqueColors = new Set(
+      nextIds.map(id => currentMeshColors.find(m => m.id === id)?.colorHex).filter(Boolean) as string[],
+    );
+    if (isFusingSelection && (nextUniqueColors.size <= 1 || nextIds.length <= 1)) {
+      setIsFusingSelection(false);
+    }
+    if (isMerging && nextUniqueColors.size <= 1) {
+      setIsMerging(false);
     }
   };
 
   const removeColorFromSelection = (colorHex: string) => {
     const idsOfColor = currentMeshColors.filter(m => m.colorHex === colorHex).map(m => m.id);
-    setSelectedMeshIds(prev => prev.filter(id => !idsOfColor.includes(id)));
+    const nextIds = selectedMeshIds.filter(id => !idsOfColor.includes(id));
+    setSelectedMeshIds(nextIds);
+
+    const nextUniqueColors = new Set(
+      nextIds.map(id => currentMeshColors.find(m => m.id === id)?.colorHex).filter(Boolean) as string[],
+    );
+    if (isFusingSelection && (nextUniqueColors.size <= 1 || nextIds.length <= 1)) {
+      setIsFusingSelection(false);
+    }
+    if (isMerging && nextUniqueColors.size <= 1) {
+      setIsMerging(false);
+    }
   };
 
   const selectedUniqueColors = Array.from(new Set(
     selectedMeshIds.map(id => currentMeshColors.find(m => m.id === id)?.colorHex).filter(Boolean) as string[]
   ));
+
+  useEffect(() => {
+    if (isFusingSelection && (selectedUniqueColors.length <= 1 || selectedMeshIds.length <= 1)) {
+      setIsFusingSelection(false);
+    }
+  }, [isFusingSelection, selectedUniqueColors.length, selectedMeshIds.length]);
+
+  useEffect(() => {
+    if (isMerging && selectedUniqueColors.length <= 1) {
+      setIsMerging(false);
+    }
+  }, [isMerging, selectedUniqueColors.length]);
 
   const getColorDistance = (hex1: string, hex2: string) => {
     const r1 = (parseInt(hex1, 16) >> 16) & 0xff;
@@ -396,6 +494,22 @@ export function useAppController() {
 
   const handleExport3MF = async () => {
     if (shapes.length === 0) return;
+
+    if (vertexCount > EXPORT_VERTEX_HARD_LIMIT) {
+      const proceed = window.confirm(
+        `Very large model (${vertexCount.toLocaleString()} preview vertices).\n\n` +
+          'Same-color fuse often cannot get dense SVGs under the usual limit — outline complexity still drives the count.\n\n' +
+          'Export may take many minutes, use a lot of memory, or crash this tab. You can cancel from the progress overlay.\n\n' +
+          'Export anyway?'
+      );
+      if (!proceed) return;
+    } else if (vertexCount > EXPORT_VERTEX_SOFT_LIMIT) {
+      const proceed = window.confirm(
+        `Large model (${vertexCount.toLocaleString()} preview vertices). Export may take several minutes and use a lot of memory.\n\n` +
+          'Tips: enable "Join objects by color for 3MF", fuse same-color shards, or reduce traced detail.\n\nContinue export?'
+      );
+      if (!proceed) return;
+    }
 
     setShowExportOptions(false);
     try {
@@ -1314,7 +1428,7 @@ export function useAppController() {
     mergeColors3MF, setMergeColors3MF, isMerging, setIsMerging, isFusingSelection, setIsFusingSelection,
     fuseStatus, setFuseStatus, isExtracting, setIsExtracting, extractStatus, setExtractStatus,
     isBasePlating, setIsBasePlating, basePlateStatus, setBasePlateStatus, showExportOptions, setShowExportOptions,
-    thinWallParts, handleSelectThinParts,
+    thinWallParts, thinWallStatus, handleSelectThinParts,
     printerProfile, setPrinterProfile, gridSize, setGridSize, exportStatus, setExportStatus,
     customScale, setCustomScale, scaleZProportionally, setScaleZProportionally, clearance, setClearance,
     sceneRef, pushToHistory, handleUndo, handleRedo, canUndo, canRedo, clearHistory,

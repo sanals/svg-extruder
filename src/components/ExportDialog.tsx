@@ -2,6 +2,7 @@ import React from 'react';
 import { Download } from 'lucide-react';
 import { HoverSlider } from './HoverSlider';
 import { THIN_WALL_THRESHOLD_MM, type ThinWallPart } from '../lib/thin-wall-check';
+import { EXPORT_VERTEX_SOFT_LIMIT, EXPORT_VERTEX_HARD_LIMIT } from '../lib/export-constants';
 
 export type PrinterProfileType = 'A1 Mini (180x180)' | 'X1/P1/A1 (256x256)';
 
@@ -32,11 +33,13 @@ interface ExportDialogProps {
   setFaceBaseColorHex: (val: string) => void;
   uniqueColors: string[];
   thinWallParts: ThinWallPart[];
+  thinWallStatus: string | null;
   handleSelectThinParts: () => void;
   handleExport3MF: () => void;
   handleExportSTL: () => void;
   svgUrl: string | null;
   exportStatus: string | null;
+  vertexCount: number;
 }
 
 export const ExportDialog: React.FC<ExportDialogProps> = ({
@@ -66,11 +69,13 @@ export const ExportDialog: React.FC<ExportDialogProps> = ({
   setFaceBaseColorHex,
   uniqueColors,
   thinWallParts,
+  thinWallStatus,
   handleSelectThinParts,
   handleExport3MF,
   handleExportSTL,
   svgUrl,
-  exportStatus
+  exportStatus,
+  vertexCount
 }) => {
   const clearanceActive = !mergeColors3MF;
   const FACE_DEPTH_PRESETS = [0.08, 0.2, 0.4, 1.0];
@@ -132,6 +137,14 @@ export const ExportDialog: React.FC<ExportDialogProps> = ({
               </div>
             )}
           </div>
+
+          {thinWallStatus && (
+            <div style={{ marginBottom: '1rem', padding: '0.65rem 0.75rem', borderRadius: '6px', backgroundColor: 'rgba(148, 163, 184, 0.12)', border: '1px solid rgba(148, 163, 184, 0.35)' }}>
+              <div style={{ fontSize: '0.75rem', color: '#94a3b8', lineHeight: 1.4 }}>
+                {thinWallStatus}
+              </div>
+            </div>
+          )}
 
           {thinWallParts.length > 0 && (
             <div style={{ marginBottom: '1rem', padding: '0.65rem 0.75rem', borderRadius: '6px', backgroundColor: 'rgba(251, 191, 36, 0.12)', border: '1px solid rgba(251, 191, 36, 0.35)' }}>
@@ -286,9 +299,24 @@ export const ExportDialog: React.FC<ExportDialogProps> = ({
             </p>
           </div>
 
+          {vertexCount > EXPORT_VERTEX_SOFT_LIMIT && (
+            <div style={{ marginBottom: '1rem', padding: '0.65rem 0.75rem', borderRadius: '6px', backgroundColor: 'rgba(239, 68, 68, 0.12)', border: '1px solid rgba(239, 68, 68, 0.35)' }}>
+              <div style={{ fontSize: '0.75rem', color: '#fca5a5', lineHeight: 1.4 }}>
+                {vertexCount > EXPORT_VERTEX_HARD_LIMIT ? (
+                  <>
+                    Very large model ({vertexCount.toLocaleString()} preview vertices). Same-color fuse may not get dense SVGs under the usual limit — outline complexity still drives the count.
+                    You can still <strong style={{ color: '#fecaca' }}>Export anyway</strong>; it may take many minutes or crash the tab (cancel is available).
+                  </>
+                ) : (
+                  <>Large model ({vertexCount.toLocaleString()} vertices). Export may be slow — enable &quot;Join objects by color&quot; and fuse same-color shards first.</>
+                )}
+              </div>
+            </div>
+          )}
+
           <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', marginTop: '1.5rem' }}>
             <button disabled={!svgUrl || !!exportStatus} style={{ width: '100%', backgroundColor: '#ec4899', color: 'white', border: 'none', padding: '10px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '6px' }} onClick={handleExport3MF}>
-              <Download size={16} /> Export 3MF (Multi-Plate)
+              <Download size={16} /> {vertexCount > EXPORT_VERTEX_HARD_LIMIT ? 'Export 3MF anyway' : 'Export 3MF (Multi-Plate)'}
             </button>
             <button disabled={!svgUrl} style={{ width: '100%', backgroundColor: '#475569', color: 'white', border: 'none', padding: '8px', borderRadius: '6px', cursor: 'pointer', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '6px', fontSize: '0.85rem' }} onClick={handleExportSTL}>
               <Download size={14} /> Export STL (Raw)

@@ -209,4 +209,66 @@ export function findThinWallParts(
   return thin;
 }
 
+const THIN_WALL_YIELD_EVERY = 8;
+
+/** Async thin-wall scan that yields so the export dialog stays responsive. */
+export async function findThinWallPartsAsync(
+  shapes: ShapeItem[],
+  opts: {
+    scaleFactor: number;
+    clearanceMm: number;
+    thresholdMm?: number;
+  },
+  signal?: AbortSignal,
+): Promise<ThinWallPart[]> {
+  const thresholdMm = opts.thresholdMm ?? DEFAULT_THRESHOLD_MM;
+  const { scaleFactor, clearanceMm } = opts;
+  if (!(scaleFactor > 0) || shapes.length === 0) return [];
+
+  const thin: ThinWallPart[] = [];
+  const clearanceDelta = clearanceMm > 0 ? -mmToClipperDelta(clearanceMm, scaleFactor) : 0;
+  const halfThresholdDelta = -mmToClipperDelta(thresholdMm / 2, scaleFactor);
+  let checked = 0;
+
+  for (const item of shapes) {
+    if (signal?.aborted) return thin;
+    if (!item.shapes.length) continue;
+
+    let multi = shapesToMultiPoly(item);
+    if (multi.length === 0) continue;
+
+    if (clearanceDelta !== 0) {
+      multi = offsetMultiPoly(multi, clearanceDelta);
+      if (multi.length === 0) {
+        thin.push({ id: item.id, colorHex: item.colorHex });
+        checked += 1;
+        if (checked % THIN_WALL_YIELD_EVERY === 0) {
+          await new Promise<void>((r) => requestAnimationFrame(() => setTimeout(r, 0)));
+        }
+        continue;
+      }
+    }
+
+    const areaBefore = clipperAreaAbs(multi);
+    const afterInset = offsetMultiPoly(multi, halfThresholdDelta);
+
+    const vanished = afterInset.length === 0;
+    const areaAfter = vanished ? 0 : clipperAreaAbs(afterInset);
+    const collapsed =
+      vanished ||
+      (areaBefore > 0 && areaAfter / areaBefore < AREA_COLLAPSE_RATIO);
+
+    if (collapsed) {
+      thin.push({ id: item.id, colorHex: item.colorHex });
+    }
+
+    checked += 1;
+    if (checked % THIN_WALL_YIELD_EVERY === 0) {
+      await new Promise<void>((r) => requestAnimationFrame(() => setTimeout(r, 0)));
+    }
+  }
+
+  return thin;
+}
+
 export const THIN_WALL_THRESHOLD_MM = DEFAULT_THRESHOLD_MM;

@@ -85,6 +85,7 @@ function App() {
     scaleZProportionally,
     clearance,
     thinWallParts,
+    thinWallStatus,
     pendingShards,
     ignoredShardColors,
     isAbsorbingShards,
@@ -418,11 +419,13 @@ function App() {
           setFaceBaseColorHex={setFaceBaseColorHex}
           uniqueColors={uniqueColors}
           thinWallParts={thinWallParts}
+          thinWallStatus={thinWallStatus}
           handleSelectThinParts={handleSelectThinParts}
           handleExport3MF={handleExport3MF}
           handleExportSTL={handleExportSTLAction}
           svgUrl={svgUrl}
           exportStatus={exportStatus}
+          vertexCount={vertexCount}
         />
       )}
     </>
