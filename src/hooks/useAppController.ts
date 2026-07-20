@@ -293,11 +293,17 @@ export function useAppController() {
     setFuseStatus("Initializing fusion...");
     await new Promise(r => requestAnimationFrame(() => setTimeout(r, 0)));
 
+    const maxDepth = Math.max(0, ...selectedMeshIds.map(id => meshDepths[id] ?? 0));
     const newIds = await svgModelRef.current.fuseSelected(selectedMeshIds, targetColorHex, false, (msg: string) => {
       setFuseStatus(msg);
     });
 
     if (newIds && newIds.length > 0) {
+      setMeshDepths(prev => {
+        const next = { ...prev };
+        newIds.forEach(id => { next[id] = maxDepth; });
+        return next;
+      });
       setMeshColorOverrides(prev => {
         const next = { ...prev };
         newIds.forEach(id => {
@@ -483,8 +489,14 @@ export function useAppController() {
       pushToHistory(); setIsAbsorbingShards(true); setFuseStatus("Fusing shards...");
       try {
         const allIdsToFuse = [...new Set([...selectedMeshIds, ...idsToAbsorb])];
+        const maxDepth = Math.max(0, ...allIdsToFuse.map(id => meshDepths[id] ?? 0));
         const newIds = await svgModelRef.current.fuseSelected(allIdsToFuse, targetColorHex, true, (msg: string) => setFuseStatus(msg));
         if (newIds && newIds.length > 0) {
+          setMeshDepths(prev => {
+            const next = { ...prev };
+            newIds.forEach(id => { next[id] = maxDepth; });
+            return next;
+          });
           setMeshColorOverrides(prev => {
             const next = { ...prev };
             newIds.forEach(id => next[id] = targetColorHex);
@@ -1162,6 +1174,9 @@ export function useAppController() {
   const currentDepth = selectedMeshIds.length > 0
     ? selectedMeshIds.reduce((sum, id) => sum + (meshDepths[id] ?? 0), 0) / selectedMeshIds.length
     : 0;
+
+  const isDepthMixed = selectedMeshIds.length > 0
+    && !areExtrusionHeightsUniform(selectedMeshIds, meshDepths);
     
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -1237,6 +1252,6 @@ export function useAppController() {
     handleExpandSelected, handleSmoothSelected, handleCreateBorder, traceImage,
     handleFileUpload, handleDepthChange, handleDepthPointerDown, handleDeleteSelected,
     handleCustomColorChange, handleCustomColorPointerDown, previewMeshIds, handleColorCountChange, handleSelectBySizeChange,
-    currentDepth, shardSizeSlider, colorChangeTimeout
+    currentDepth, isDepthMixed, shardSizeSlider, colorChangeTimeout
   };
 }
