@@ -630,9 +630,9 @@ export const LeftPanel: React.FC<LeftPanelProps> = (props) => {
                 onClick={initiateFuse}
                 disabled={selectedMeshIds.length <= 1 || isMerging || isFusingSelection}
                 style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.25rem', fontSize: '0.7rem', padding: '0.5rem', backgroundColor: '#f97316', color: 'white', border: 'none', borderRadius: '4px', opacity: selectedMeshIds.length > 1 ? 1 : 0.5, cursor: selectedMeshIds.length > 1 ? 'pointer' : 'not-allowed' }}
-                title="Fuse Touching Parts"
+                title={selectedMeshIds.length > 1 ? `Fuse ${selectedMeshIds.length} touching parts` : 'Fuse Touching Parts'}
               >
-                <Combine size={14} /> Fuse Parts
+                <Combine size={14} /> {selectedMeshIds.length > 1 ? `Fuse ${selectedMeshIds.length} Parts` : 'Fuse Parts'}
               </button>
               <button
                 onClick={() => setIsMerging(true)}
