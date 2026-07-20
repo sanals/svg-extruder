@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import * as THREE from 'three';
 import { type SvgModelRef } from '../components/SvgModel';
 import { useHistory } from './useHistory';
-import { exportToSTL, areExtrusionHeightsUniform } from '../lib/export-utils';
+import { exportShapesToSTL, areExtrusionHeightsUniform } from '../lib/export-utils';
 import {
   estimateExportScaleFactor,
   findThinWallParts,
@@ -372,13 +372,28 @@ export function useAppController() {
     }
   };
 
-  const handleExportSTLAction = () => {
-    if (!sceneRef.current) return;
+  const handleExportSTLAction = async () => {
+    if (!svgModelRef.current) return;
     setShowExportOptions(false);
+    setExportStatus('Building STL (manifold)...');
     try {
-      exportToSTL(sceneRef.current, customScale, scaleZProportionally, mergeBeforeExport, printFaceDown && canPrintFaceDown);
+      const shapes = svgModelRef.current.getShapes();
+      await exportShapesToSTL(
+        shapes,
+        customScale,
+        scaleZProportionally,
+        mergeBeforeExport,
+        meshDepths,
+        meshColorOverrides,
+        backingDepth,
+        printFaceDown && canPrintFaceDown,
+        (msg) => setExportStatus(msg),
+      );
     } catch (e) {
+      console.error(e);
       alert("Failed to export STL. Check console for details.");
+    } finally {
+      setExportStatus(null);
     }
   };
 

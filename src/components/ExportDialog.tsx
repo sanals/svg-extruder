@@ -282,7 +282,7 @@ export const ExportDialog: React.FC<ExportDialogProps> = ({
             <p style={{ fontSize: '0.65rem', color: '#94a3b8', margin: '0.25rem 0 0', lineHeight: 1.4 }}>
               For cleaner slicer results: keep <strong style={{ color: '#cbd5e1' }}>Cut overlaps</strong> on when loading.
               Seal Gaps is a preview bevel only and is not applied to 3MF export.
-              Face-only color applies to 3MF, not STL.
+              Face-only color applies to 3MF, not STL. STL now uses the same manifold solids as 3MF (not the preview mesh).
             </p>
           </div>
 

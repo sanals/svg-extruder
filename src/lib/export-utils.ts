@@ -559,6 +559,142 @@ export async function sliceAndExport(
   return null;
 }
 
+/**
+ * Build printable STL from shape data using the same manifold extrusion as 3MF.
+ * Does NOT dump the preview scene (ExtrudeGeometry + Seal Gaps bevel), which is non-manifold.
+ *
+ * @param customScalePercent UI scale (100 = 100%)
+ */
+export async function exportShapesToSTL(
+  shapesWithColors: ShapeItem[],
+  customScalePercent: number,
+  scaleZProportionally: boolean,
+  mergeBeforeExport: boolean,
+  meshDepths: Record<string, number>,
+  meshColorOverrides: Record<string, string>,
+  backingDepth: number,
+  printFaceDown: boolean = false,
+  onProgress?: (msg: string) => void,
+): Promise<void> {
+  if (shapesWithColors.length === 0) {
+    throw new Error('No shapes to export');
+  }
+
+  const progress = onProgress ?? (() => {});
+  progress('Initializing manifold engine...');
+  await ensureManifoldReady();
+  await yieldThread();
+
+  const customScale = customScalePercent / 100.0;
+  const xyScale = 0.1 * customScale;
+  const zScale = scaleZProportionally ? xyScale : 0.1;
+
+  const heightsUniform = areExtrusionHeightsUniform(
+    shapesWithColors.map(s => s.id),
+    meshDepths,
+  );
+  const doFlipFaceDown = printFaceDown && heightsUniform;
+
+  const finalizeGeom = (geom: THREE.BufferGeometry): THREE.BufferGeometry => {
+    geom.applyMatrix4(new THREE.Matrix4().makeScale(xyScale, -xyScale, zScale));
+    if (doFlipFaceDown) {
+      flipFaceDown(geom);
+    } else {
+      flipTriangleWinding(geom);
+    }
+    return hardenExportGeometry(geom, 1e-3);
+  };
+
+  const buildSolid = (multiPoly: MultiPolygon, totalDepth: number): THREE.BufferGeometry | null => {
+    const geom = extrudeMultiPolyForExport(multiPoly, totalDepth);
+    if (!geom) return null;
+    return finalizeGeom(geom);
+  };
+
+  type StlPart = { multiPoly: MultiPolygon; totalDepth: number; id: string };
+  const parts: StlPart[] = [];
+
+  progress('Preparing shapes...');
+  await yieldThread();
+
+  for (const item of shapesWithColors) {
+    const multiPoly: MultiPolygon = item.shapes.map(shape => shapeToPolygon(shape));
+    if (multiPoly.length === 0) continue;
+    const depth = meshDepths[item.id] ?? 0;
+    const totalDepth = depth + backingDepth;
+    if (totalDepth <= 0) continue;
+    parts.push({ multiPoly, totalDepth, id: item.id });
+  }
+
+  if (parts.length === 0) {
+    throw new Error('No extrudable parts (all zero depth?)');
+  }
+
+  const geometries: THREE.BufferGeometry[] = [];
+
+  if (mergeBeforeExport) {
+    progress('Uniting polygons for single STL mesh...');
+    await yieldThread();
+    const maxDepth = Math.max(...parts.map(p => p.totalDepth));
+    let geom: THREE.BufferGeometry | null = null;
+    try {
+      const united = unionMultiPolygons(parts.map(p => p.multiPoly));
+      if (united.length > 0) {
+        geom = buildSolid(united, maxDepth);
+      }
+    } catch (err) {
+      console.error('STL union failed; falling back to per-part solids', err);
+    }
+    if (!geom) {
+      const geoms: THREE.BufferGeometry[] = [];
+      for (const part of parts) {
+        const g = buildSolid(part.multiPoly, part.totalDepth);
+        if (g) geoms.push(g);
+      }
+      if (geoms.length === 0) throw new Error('Failed to build STL geometry');
+      geom = concatGeometries(geoms);
+    }
+    geometries.push(geom);
+  } else {
+    progress('Building manifold solids...');
+    await yieldThread();
+    for (let i = 0; i < parts.length; i++) {
+      if (i % 8 === 0) {
+        progress(`Building solid ${i + 1}/${parts.length}...`);
+        await yieldThread();
+      }
+      const g = buildSolid(parts[i].multiPoly, parts[i].totalDepth);
+      if (g) geometries.push(g);
+    }
+  }
+
+  if (geometries.length === 0) {
+    throw new Error('Failed to build STL geometry');
+  }
+
+  progress('Writing STL file...');
+  await yieldThread();
+
+  const group = new THREE.Group();
+  for (const geom of geometries) {
+    group.add(new THREE.Mesh(geom, new THREE.MeshBasicMaterial()));
+  }
+
+  const exporter = new STLExporter();
+  const result = exporter.parse(group, { binary: true });
+  const blob = new Blob([result], { type: 'application/octet-stream' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.style.display = 'none';
+  link.href = url;
+  link.download = 'extruded_model.stl';
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+
+/** @deprecated Preview-scene STL dump (non-manifold). Use exportShapesToSTL. */
 export function exportToSTL(
   scene: THREE.Object3D,
   customScale: number,
