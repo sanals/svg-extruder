@@ -1,7 +1,11 @@
 import JSZip from "jszip"
 import * as THREE from "three"
 import * as BufferGeometryUtils from "three/examples/jsm/utils/BufferGeometryUtils.js"
-import { throwIfExportAborted } from "./export-constants"
+import {
+  EXPORT_3MF_VERTEX_CHUNK,
+  throwIfExportAborted,
+  yieldExportThread,
+} from "./export-constants"
 
 export interface PrintItem {
   geometry: THREE.BufferGeometry // MUST have normals and position attributes!
@@ -15,6 +19,13 @@ export interface PrintPlate {
   items: PrintItem[]
   centerX?: number
   centerY?: number
+}
+
+export interface BuildMultiPlate3MFOptions {
+  printerModel?: string
+  groupIntoOneObject?: boolean
+  onProgress?: (msg: string) => void
+  signal?: AbortSignal
 }
 
 const fmt = (n: number) => Number(n.toFixed(6))
@@ -34,70 +45,110 @@ function getUniqueColors(plates: PrintPlate[]): string[] {
 }
 
 function computePlateCenter(plate: PrintPlate): { cx: number, cy: number } {
-  let minX = Infinity, maxX = -Infinity
-  let minY = Infinity, maxY = -Infinity
+  const box = new THREE.Box3()
+  let hasBounds = false
 
   plate.items.forEach(item => {
-    const geo = item.geometry.clone()
-    if (item.transform) geo.applyMatrix4(item.transform)
-    geo.computeBoundingBox()
-    if (geo.boundingBox) {
-      minX = Math.min(minX, geo.boundingBox.min.x)
-      maxX = Math.max(maxX, geo.boundingBox.max.x)
-      minY = Math.min(minY, geo.boundingBox.min.y)
-      maxY = Math.max(maxY, geo.boundingBox.max.y)
+    const geo = item.geometry
+    if (!geo.boundingBox) geo.computeBoundingBox()
+    if (!geo.boundingBox) return
+    const itemBox = geo.boundingBox.clone()
+    if (item.transform) itemBox.applyMatrix4(item.transform)
+    if (!hasBounds) {
+      box.copy(itemBox)
+      hasBounds = true
+    } else {
+      box.union(itemBox)
     }
   })
 
-  const cx = minX === Infinity ? 0 : (minX + maxX) / 2
-  const cy = minY === Infinity ? 0 : (minY + maxY) / 2
-  return { cx, cy }
+  if (!hasBounds) return { cx: 0, cy: 0 }
+  const center = new THREE.Vector3()
+  box.getCenter(center)
+  return { cx: center.x, cy: center.y }
 }
 
-function generateMeshObjectXml(
-  item: PrintItem,
-  templateId: number,
-  colorIndex: number
-): string {
+function prepareGeometryFor3mf(geo: THREE.BufferGeometry): THREE.BufferGeometry {
   // Keep indexed Manifold meshes; only weld if non-indexed. Avoid toNonIndexed
   // which re-splits verts and fights watertight topology.
-  let geo = item.geometry.clone()
-  if (!geo.index) {
-    geo = BufferGeometryUtils.mergeVertices(geo, 1e-3)
+  let g = geo.clone()
+  if (!g.index) {
+    g = BufferGeometryUtils.mergeVertices(g, 1e-3)
   }
-  if (!geo.getAttribute('normal')) {
-    geo.computeVertexNormals()
+  if (!g.getAttribute('normal')) {
+    g.computeVertexNormals()
   }
 
-  const pos = geo.getAttribute("position")
-  let index = geo.getIndex()
+  const pos = g.getAttribute("position")
+  let index = g.getIndex()
 
-  // If still non-indexed, build sequential tris from verts
   if (!index && pos) {
     const triCount = Math.floor(pos.count / 3)
     const idx = new Uint32Array(triCount * 3)
     for (let i = 0; i < triCount * 3; i++) idx[i] = i
-    geo.setIndex(new THREE.BufferAttribute(idx, 1))
-    index = geo.getIndex()
+    g.setIndex(new THREE.BufferAttribute(idx, 1))
+    index = g.getIndex()
   }
 
-  const verts: string[] = []
-  const tris: string[] = []
+  return g
+}
 
-  for (let i = 0; i < pos.count; i++) {
-    verts.push(`<vertex x="${fmt(pos.getX(i))}" y="${fmt(pos.getY(i))}" z="${fmt(pos.getZ(i))}"/>`)
+async function generateMeshObjectXml(
+  item: PrintItem,
+  templateId: number,
+  colorIndex: number,
+  meshLabel: string,
+  onProgress?: (msg: string) => void,
+  signal?: AbortSignal
+): Promise<string> {
+  throwIfExportAborted(signal)
+  const geo = prepareGeometryFor3mf(item.geometry)
+  const pos = geo.getAttribute("position")
+  const index = geo.getIndex()
+  if (!pos || !index) {
+    throw new Error(`Invalid geometry for 3MF export: ${meshLabel}`)
   }
 
-  if (index) {
-    for (let v = 0; v < index.count; v += 3) {
-      tris.push(`<triangle v1="${index.getX(v)}" v2="${index.getX(v + 1)}" v3="${index.getX(v + 2)}" pid="1" p1="${colorIndex}"/>`)
+  const vertChunks: string[] = []
+  for (let start = 0; start < pos.count; start += EXPORT_3MF_VERTEX_CHUNK) {
+    throwIfExportAborted(signal)
+    const end = Math.min(start + EXPORT_3MF_VERTEX_CHUNK, pos.count)
+    let chunk = ""
+    for (let i = start; i < end; i++) {
+      chunk += `<vertex x="${fmt(pos.getX(i))}" y="${fmt(pos.getY(i))}" z="${fmt(pos.getZ(i))}"/>`
+    }
+    vertChunks.push(chunk)
+    if (onProgress && (end === pos.count || end % (EXPORT_3MF_VERTEX_CHUNK * 5) === 0)) {
+      onProgress(`Writing ${meshLabel}: ${end.toLocaleString()} / ${pos.count.toLocaleString()} vertices...`)
+    }
+    if (start > 0 && start % (EXPORT_3MF_VERTEX_CHUNK * 5) === 0) {
+      await yieldExportThread()
+    }
+  }
+
+  const triChunks: string[] = []
+  // Chunk by whole triangles only — raw index strides not divisible by 3 misalign
+  // later chunks (e.g. 50000 % 3 === 2) and corrupt mesh connectivity in Bambu.
+  const TRI_CHUNK_TRIS = 16_666
+  const triCount = Math.floor(index.count / 3)
+  for (let tri0 = 0; tri0 < triCount; tri0 += TRI_CHUNK_TRIS) {
+    throwIfExportAborted(signal)
+    const triEnd = Math.min(tri0 + TRI_CHUNK_TRIS, triCount)
+    let chunk = ""
+    for (let tri = tri0; tri < triEnd; tri++) {
+      const t = tri * 3
+      chunk += `<triangle v1="${index.getX(t)}" v2="${index.getX(t + 1)}" v3="${index.getX(t + 2)}" pid="1" p1="${colorIndex}"/>`
+    }
+    triChunks.push(chunk)
+    if (tri0 > 0 && tri0 % (TRI_CHUNK_TRIS * 2) === 0) {
+      await yieldExportThread()
     }
   }
 
   return `    <object id="${templateId}" type="model">\n` +
          `      <mesh>\n` +
-         `        <vertices>${verts.join("")}</vertices>\n` +
-         `        <triangles>${tris.join("")}</triangles>\n` +
+         `        <vertices>${vertChunks.join("")}</vertices>\n` +
+         `        <triangles>${triChunks.join("")}</triangles>\n` +
          `      </mesh>\n` +
          `    </object>`
 }
@@ -199,19 +250,27 @@ function getTransformOffset(item: PrintItem) {
   return { tx: 0, ty: 0, tz: 0 }
 }
 
-function processPlates(
+async function processPlates(
   plates: PrintPlate[], 
   uniqueColors: string[],
   groupIntoOneObject: boolean,
   TRAY_SIZE_X: number,
-  TRAY_SIZE_Y: number
+  TRAY_SIZE_Y: number,
+  onProgress?: (msg: string) => void,
+  signal?: AbortSignal
 ) {
   const objects: string[] = []
   const buildItems: string[] = []
   const modelSettingsObjects: string[] = []
   let nextObjectId = 1
 
-  plates.forEach((plate, plateIdx) => {
+  let totalMeshes = 0
+  plates.forEach(p => { totalMeshes += p.items.length })
+  let meshIndex = 0
+
+  for (let plateIdx = 0; plateIdx < plates.length; plateIdx++) {
+    const plate = plates[plateIdx]
+    throwIfExportAborted(signal)
     const { cx, cy } = computePlateCenter(plate)
     const { row, col } = getPlateRowCol(plate.name, plateIdx)
 
@@ -224,14 +283,22 @@ function processPlates(
     const partSettingsXmls: string[] = []
     const plateObjectIds: number[] = []
 
-    plate.items.forEach((item) => {
+    for (const item of plate.items) {
+      meshIndex++
       const templateId = nextObjectId++
       const cleanName = (item.name || "Object").replace(/[^a-zA-Z0-9_\- ]/g, "")
       const hex = item.colorHex || "#CCCCCC"
       const colorIndex = uniqueColors.indexOf(hex)
       const extruderIndex = colorIndex + 1
+      const meshLabel = `mesh ${meshIndex}/${totalMeshes}`
 
-      objects.push(generateMeshObjectXml(item, templateId, colorIndex))
+      if (onProgress) {
+        onProgress(`Building 3MF ${meshLabel}...`)
+      }
+
+      objects.push(await generateMeshObjectXml(
+        item, templateId, colorIndex, meshLabel, onProgress, signal
+      ))
 
       const { tx, ty, tz } = getTransformOffset(item)
 
@@ -257,7 +324,7 @@ function processPlates(
     <metadata key="extruder" value="${extruderIndex}"/>
   </object>`)
       }
-    })
+    }
 
     if (groupIntoOneObject && componentXmls.length > 0) {
       const masterId = nextObjectId++
@@ -280,9 +347,8 @@ ${partSettingsXmls.join("\n")}
   </object>`)
     }
     
-    // Store plateObjectIds into the plate object temporarily so we can access it during the plateConfigs loop
     ;(plate as any)._objectIds = plateObjectIds
-  })
+  }
   
   return { objects, buildItems, modelSettingsObjects }
 }
@@ -290,27 +356,27 @@ ${partSettingsXmls.join("\n")}
 /**
  * Builds a multi-plate Bambu Studio compatible 3MF file from an array of physical plates.
  */
-export async function buildMultiPlate3MF(plates: PrintPlate[], options?: {
-  printerModel?: string
-  groupIntoOneObject?: boolean
-  onProgress?: (msg: string) => void
-  signal?: AbortSignal
-}): Promise<Blob> {
-  throwIfExportAborted(options?.signal)
-  options?.onProgress?.("Writing 3MF archive...")
-
+export async function buildMultiPlate3MF(
+  plates: PrintPlate[],
+  options?: BuildMultiPlate3MFOptions
+): Promise<Blob> {
   const zip = new JSZip()
   const TRAY_SIZE_X = options?.printerModel === 'a1_mini' ? 180 : 256
   const TRAY_SIZE_Y = options?.printerModel === 'a1_mini' ? 180 : 256
+  const onProgress = options?.onProgress
+  const signal = options?.signal
 
+  throwIfExportAborted(signal)
   const uniqueColors = getUniqueColors(plates)
   const groupIntoOneObject = options?.groupIntoOneObject !== false
 
-  const { objects, buildItems, modelSettingsObjects } = processPlates(
-    plates, uniqueColors, groupIntoOneObject, TRAY_SIZE_X, TRAY_SIZE_Y
+  if (onProgress) onProgress("Writing 3MF mesh data...")
+  const { objects, buildItems, modelSettingsObjects } = await processPlates(
+    plates, uniqueColors, groupIntoOneObject, TRAY_SIZE_X, TRAY_SIZE_Y, onProgress, signal
   )
 
-  throwIfExportAborted(options?.signal)
+  throwIfExportAborted(signal)
+  if (onProgress) onProgress("Packaging 3MF archive...")
 
   const colorEntries = getColorEntriesXml(uniqueColors)
 
@@ -369,11 +435,13 @@ ${buildItems.join("\n")}
   </header>
 </config>`)
 
+  if (onProgress) onProgress("Compressing 3MF...")
+  await yieldExportThread()
+  throwIfExportAborted(signal)
+
   return zip.generateAsync({ 
     type: "blob",
     compression: "DEFLATE",
     compressionOptions: { level: 6 }
   })
 }
-
-
