@@ -1,4 +1,4 @@
-﻿import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import * as THREE from 'three';
 import type { ShapeItem } from '../types';
 import { useHistory } from './useHistory';
@@ -55,9 +55,9 @@ export function useAppController() {
   const [colorCount, setColorCount] = useState<number>(8);
   const [tracerId, setTracerId] = useState<TracerId>(DEFAULT_TRACER_ID);
   const [vtracerPreset, setVtracerPreset] = useState<VTracerPresetId>('logo');
-  /** Print-path filter_speckle UI (area = n┬▓). Default 12 matches prior hardcoded 144. */
+  /** Print-path filter_speckle UI (area = n²). Default 12 matches prior hardcoded 144. */
   const [vtracerFilterSpeckle, setVtracerFilterSpeckle] = useState(12);
-  /** Print-path color precision bits (1ΓÇô8). 0 = auto from color-count tiers. */
+  /** Print-path color precision bits (1–8). 0 = auto from color-count tiers. */
   const [vtracerColorPrecisionBits, setVtracerColorPrecisionBits] = useState(0);
   /** Vectorize Image advanced (site UI bits / speck / path). */
   const [viColorPrecision, setViColorPrecision] = useState(6);
@@ -745,7 +745,7 @@ export function useAppController() {
     let traceData: Uint8ClampedArray = rgba.data;
     let palette: Array<{ r: number; g: number; b: number }> = [];
     if (useLock) {
-      // Print path only: fringe/snap, then posterize to ΓëñN.
+      // Print path only: fringe/snap, then posterize to ≤N.
       const canvas = document.createElement('canvas');
       canvas.width = rgba.width;
       canvas.height = rgba.height;
@@ -806,7 +806,7 @@ export function useAppController() {
         });
         if (currentTraceId !== traceIdRef.current) return;
 
-        // Print: seal + snap. VI: keep raw curves, snap fills to ΓëñviMaxColors (no seal).
+        // Print: seal + snap. VI: keep raw curves, snap fills to ≤viMaxColors (no seal).
         let finalSvg = svgStr;
         if (useLock) {
           finalSvg = sealAndStraightenSvg(svgStr);
@@ -851,7 +851,7 @@ export function useAppController() {
         setIsMerging(false);
 
         if (pipelinePhaseRef.current === 'extrudeReady') {
-          // Re-trace while already in 3D ΓÇö refresh SvgModel from raw (un-normalized) SVG.
+          // Re-trace while already in 3D — refresh SvgModel from raw (un-normalized) SVG.
           const extrudeUrl = URL.createObjectURL(blob);
           setSvgUrl((old) => {
             if (old) URL.revokeObjectURL(old);
@@ -859,7 +859,7 @@ export function useAppController() {
           });
           setIsTracing('Step 4/4: Parsing 2D Geometry...');
         } else {
-          // First convert (or preview) ΓÇö show 2D SVG only until Promote.
+          // First convert (or preview) — show 2D SVG only until Promote.
           setSvgUrl((old) => {
             if (old) URL.revokeObjectURL(old);
             return null;
@@ -1173,7 +1173,7 @@ export function useAppController() {
 
   const handlePromoteTo3D = () => {
     if (!rawSvgContent) return;
-    // Seal seams for extrusion only ΓÇö Step 1 preview stays on unsealed rawSvgContent.
+    // Seal seams for extrusion only — Step 1 preview stays on unsealed rawSvgContent.
     const sealedSvg = sealAndStraightenSvg(rawSvgContent);
     const extrudeUrl = URL.createObjectURL(new Blob([sealedSvg], { type: 'image/svg+xml' }));
     setSvgUrl((old) => {
