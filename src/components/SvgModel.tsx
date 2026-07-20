@@ -11,6 +11,7 @@ import {
   getAdjacentColors
 } from '../lib/geometry-ops';
 import { sliceAndExport } from '../lib/export-utils';
+import { getShapeAreas as computeShapeAreas } from '../lib/shape-areas';
 
 export interface SvgModelProps {
   svgUrl: string;
@@ -97,18 +98,7 @@ export const SvgModel = forwardRef<SvgModelRef, SvgModelProps>(({
     getShapes: () => shapesWithColors,
     setShapes: (shapes) => setShapesWithColors(shapes),
     getShapeAreas: () => {
-      return shapesWithColors.map(item => {
-        let area = 0;
-        item.shapes.forEach(shape => {
-          const pts = shape.getPoints();
-          if (pts.length > 2) area += THREE.ShapeUtils.area(pts);
-          shape.holes.forEach(hole => {
-            const hPts = hole.getPoints();
-            if (hPts.length > 2) area -= THREE.ShapeUtils.area(hPts);
-          });
-        });
-        return { id: item.id, area: Math.abs(area) };
-      });
+      return computeShapeAreas(shapesWithColors);
     },
     fuseSelected: async (idsToFuse, targetColorHex, forceMergeAll, onProgress) => {
       const res = await fuseSelected(shapesWithColors, idsToFuse, targetColorHex, forceMergeAll, meshColorOverrides, onProgress);
