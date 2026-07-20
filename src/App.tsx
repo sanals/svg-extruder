@@ -121,7 +121,7 @@ function App() {
     handleColorCountChange,
     handleSelectBySizeChange,
     sceneRef,
-    svgModelRef,
+    shapes,
     handleUndo,
     handleRedo,
     canUndo,
@@ -132,8 +132,6 @@ function App() {
     setCutOverlaps,
     setSelectedMeshIds,
     setVertexCount,
-    setIsTracing,
-    setMeshColors,
     setMeshColorOverrides,
     setIsMerging,
     setIsFusingSelection,
@@ -304,12 +302,10 @@ function App() {
                   <AutoFit trigger={fitTrigger} />
                   <group ref={sceneRef}>
                     <SvgModel
-                      ref={svgModelRef}
-                      svgUrl={svgUrl}
+                      shapes={shapes}
                       highlightStyle={highlightStyle}
                       backingDepth={backingDepth}
                       sealGaps={sealGaps}
-                      cutOverlaps={cutOverlaps}
                       selectedMeshIds={selectedMeshIds}
                       previewMeshIds={previewMeshIds}
                       meshDepths={meshDepths}
@@ -336,12 +332,6 @@ function App() {
                         });
                       }}
                       onVerticesCalculated={setVertexCount}
-                      onParseProgress={(msg) => setIsTracing(msg)}
-                      onParseComplete={(extractedColors) => {
-                        setIsTracing(null);
-                        if (extractedColors) setMeshColors(extractedColors);
-                      }}
-                      onInitialLoadComplete={() => ctrl.setFitTrigger(prev => prev + 1)}
                     />
                   </group>
                 </Bounds>
@@ -426,6 +416,7 @@ function App() {
           setFaceColorDepthMm={setFaceColorDepthMm}
           faceBaseColorHex={faceBaseColorHex}
           setFaceBaseColorHex={setFaceBaseColorHex}
+          uniqueColors={uniqueColors}
           thinWallParts={thinWallParts}
           handleSelectThinParts={handleSelectThinParts}
           handleExport3MF={handleExport3MF}

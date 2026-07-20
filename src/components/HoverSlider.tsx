@@ -19,7 +19,7 @@ export const HoverSlider: React.FC<HoverSliderProps> = ({ min, max, step, value,
   const [tooltipPos, setTooltipPos] = useState({ x: 0, y: 0 });
   const sliderRef = useRef<HTMLInputElement>(null);
 
-  const handleMouseMove = (e: React.MouseEvent<HTMLInputElement>) => {
+  const handleMouseMove = (_e: React.MouseEvent<HTMLInputElement>) => {
     if (sliderRef.current) {
       const rect = sliderRef.current.getBoundingClientRect();
       

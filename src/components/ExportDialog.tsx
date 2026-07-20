@@ -30,6 +30,7 @@ interface ExportDialogProps {
   setFaceColorDepthMm: (val: number) => void;
   faceBaseColorHex: string;
   setFaceBaseColorHex: (val: string) => void;
+  uniqueColors: string[];
   thinWallParts: ThinWallPart[];
   handleSelectThinParts: () => void;
   handleExport3MF: () => void;
@@ -63,6 +64,7 @@ export const ExportDialog: React.FC<ExportDialogProps> = ({
   setFaceColorDepthMm,
   faceBaseColorHex,
   setFaceBaseColorHex,
+  uniqueColors,
   thinWallParts,
   handleSelectThinParts,
   handleExport3MF,
@@ -228,15 +230,46 @@ export const ExportDialog: React.FC<ExportDialogProps> = ({
                     </div>
                   )}
                 </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <label className="checkbox-label" style={{ fontSize: '0.7rem', color: '#94a3b8', margin: 0 }}>Base filament</label>
-                  <input
-                    type="color"
-                    value={`#${faceBaseColorHex.replace('#', '')}`}
-                    onChange={(e) => setFaceBaseColorHex(e.target.value.replace('#', '').toLowerCase())}
-                    style={{ width: '28px', height: '28px', border: 'none', padding: 0, background: 'transparent', cursor: 'pointer' }}
-                    title="Color for the body under the face"
-                  />
+                <div>
+                  <label className="checkbox-label" style={{ fontSize: '0.7rem', color: '#94a3b8', marginBottom: '0.35rem', display: 'block' }}>
+                    Base filament
+                  </label>
+                  {uniqueColors.length > 0 && (
+                    <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap', marginBottom: '0.35rem' }}>
+                      {uniqueColors.map((colorHex) => {
+                        const selected = faceBaseColorHex.replace('#', '').toLowerCase() === colorHex.toLowerCase();
+                        return (
+                          <button
+                            key={colorHex}
+                            type="button"
+                            onClick={() => setFaceBaseColorHex(colorHex.toLowerCase())}
+                            style={{
+                              width: '24px',
+                              height: '24px',
+                              backgroundColor: `#${colorHex}`,
+                              borderRadius: '4px',
+                              cursor: 'pointer',
+                              padding: 0,
+                              border: selected ? '2px solid #fff' : '1px solid rgba(255,255,255,0.2)',
+                              boxShadow: selected ? '0 0 0 2px rgba(59,130,246,0.5)' : 'none',
+                              flexShrink: 0,
+                            }}
+                            title={`#${colorHex}`}
+                          />
+                        );
+                      })}
+                    </div>
+                  )}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <span style={{ fontSize: '0.65rem', color: '#64748b' }}>Custom</span>
+                    <input
+                      type="color"
+                      value={`#${faceBaseColorHex.replace('#', '')}`}
+                      onChange={(e) => setFaceBaseColorHex(e.target.value.replace('#', '').toLowerCase())}
+                      style={{ width: '28px', height: '28px', border: 'none', padding: 0, background: 'transparent', cursor: 'pointer' }}
+                      title="Custom base filament color (e.g. white for body under faces)"
+                    />
+                  </div>
                 </div>
                 <p style={{ fontSize: '0.65rem', color: '#94a3b8', margin: 0, lineHeight: 1.35 }}>
                   Builds one shared base solid plus thin face shells per color (saves AMS filament).
