@@ -1,6 +1,7 @@
 import JSZip from "jszip"
 import * as THREE from "three"
 import * as BufferGeometryUtils from "three/examples/jsm/utils/BufferGeometryUtils.js"
+import { throwIfExportAborted } from "./export-constants"
 
 export interface PrintItem {
   geometry: THREE.BufferGeometry // MUST have normals and position attributes!
@@ -289,7 +290,15 @@ ${partSettingsXmls.join("\n")}
 /**
  * Builds a multi-plate Bambu Studio compatible 3MF file from an array of physical plates.
  */
-export async function buildMultiPlate3MF(plates: PrintPlate[], options?: { printerModel?: string, groupIntoOneObject?: boolean }): Promise<Blob> {
+export async function buildMultiPlate3MF(plates: PrintPlate[], options?: {
+  printerModel?: string
+  groupIntoOneObject?: boolean
+  onProgress?: (msg: string) => void
+  signal?: AbortSignal
+}): Promise<Blob> {
+  throwIfExportAborted(options?.signal)
+  options?.onProgress?.("Writing 3MF archive...")
+
   const zip = new JSZip()
   const TRAY_SIZE_X = options?.printerModel === 'a1_mini' ? 180 : 256
   const TRAY_SIZE_Y = options?.printerModel === 'a1_mini' ? 180 : 256
@@ -300,6 +309,8 @@ export async function buildMultiPlate3MF(plates: PrintPlate[], options?: { print
   const { objects, buildItems, modelSettingsObjects } = processPlates(
     plates, uniqueColors, groupIntoOneObject, TRAY_SIZE_X, TRAY_SIZE_Y
   )
+
+  throwIfExportAborted(options?.signal)
 
   const colorEntries = getColorEntriesXml(uniqueColors)
 

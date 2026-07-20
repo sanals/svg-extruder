@@ -6,8 +6,15 @@ import * as BufferGeometryUtils from 'three/examples/jsm/utils/BufferGeometryUti
 import { STLExporter } from 'three/examples/jsm/exporters/STLExporter.js';
 import * as ClipperLib from 'clipper-lib';
 import { ensureManifoldReady, extrudeMultiPolygonManifold } from './manifold-extrude';
+import {
+  EXPORT_YIELD_EVERY_SHAPES,
+  throwIfExportAborted,
+  yieldExportThread,
+} from './export-constants';
 
-const yieldThread = () => new Promise(r => requestAnimationFrame(() => setTimeout(r, 0)));
+export { ExportAbortError, EXPORT_VERTEX_SOFT_LIMIT, EXPORT_VERTEX_HARD_LIMIT } from './export-constants';
+
+const yieldThread = yieldExportThread;
 
 /** Reverse triangle winding (needed after odd number of axis reflections). */
 export function flipTriangleWinding(geo: THREE.BufferGeometry): void {
@@ -123,7 +130,8 @@ export async function sliceAndExport(
   onProgress: (msg: string) => void,
   printFaceDown: boolean = false,
   faceColorDepthMm: number = 0,
-  baseColorHex: string = 'ffffff'
+  baseColorHex: string = 'ffffff',
+  signal?: AbortSignal
 ): Promise<Blob | null> {
   // _sealGaps is preview-only (viewport bevel); export never enables ExtrudeGeometry bevel.
   void _sealGaps;
@@ -144,10 +152,12 @@ export async function sliceAndExport(
     : 0;
 
   onProgress("Initializing manifold engine...");
+  throwIfExportAborted(signal);
   await ensureManifoldReady();
   await yieldThread();
 
   onProgress("Analyzing model dimensions...");
+  throwIfExportAborted(signal);
   await yieldThread();
 
   let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
@@ -377,12 +387,20 @@ export async function sliceAndExport(
   };
 
   onProgress("Applying assembly clearance...");
+  throwIfExportAborted(signal);
   await yieldThread();
 
   const offsetShapes: Record<string, MultiPolygon> = {};
   const offsetAmountInClipper = clearance > 0 ? -(clearance / (0.1 * scaleFactor)) * clipperScale : 0;
 
-  shapesWithColors.forEach(item => {
+  for (let shapeIdx = 0; shapeIdx < shapesWithColors.length; shapeIdx++) {
+    const item = shapesWithColors[shapeIdx];
+    if (shapeIdx > 0 && shapeIdx % EXPORT_YIELD_EVERY_SHAPES === 0) {
+      onProgress(`Applying assembly clearance (${shapeIdx}/${shapesWithColors.length})...`);
+      throwIfExportAborted(signal);
+      await yieldThread();
+    }
+
     if (offsetAmountInClipper === 0) {
        const multiPoly: MultiPolygon = [];
        item.shapes.forEach(shape => multiPoly.push(shapeToPolygon(shape)));
@@ -413,11 +431,16 @@ export async function sliceAndExport(
        offsettedTree.Childs().forEach((child: any) => parsePolyNode(child, resultMultiPoly));
        offsetShapes[item.id] = resultMultiPoly;
     }
-  });
+  }
+
+  const totalQuadrants = gridRows * gridCols;
+  let quadrantIndex = 0;
 
   for (let r = 0; r < gridRows; r++) {
     for (let c = 0; c < gridCols; c++) {
-      onProgress(`Slicing quadrant ${r * gridCols + c + 1} of ${gridRows * gridCols}...`);
+      quadrantIndex++;
+      onProgress(`Slicing quadrant ${quadrantIndex} of ${totalQuadrants}...`);
+      throwIfExportAborted(signal);
       await yieldThread();
 
       const rectMinX = minX - svgOffsetX + c * cellSvgWidth;
@@ -436,7 +459,14 @@ export async function sliceAndExport(
 
       const clippedParts: ClippedPart[] = [];
 
-      shapesWithColors.forEach(item => {
+      for (let shapeIdx = 0; shapeIdx < shapesWithColors.length; shapeIdx++) {
+        const item = shapesWithColors[shapeIdx];
+        if (shapeIdx > 0 && shapeIdx % EXPORT_YIELD_EVERY_SHAPES === 0) {
+          onProgress(`Clipping quadrant ${quadrantIndex}/${totalQuadrants} (${shapeIdx}/${shapesWithColors.length} shapes)...`);
+          throwIfExportAborted(signal);
+          await yieldThread();
+        }
+
         const clipper = new ClipperLib.Clipper();
         // @ts-ignore
         clipper.AddPath(clipPath, ClipperLib.PolyType.ptClip, true);
@@ -476,16 +506,18 @@ export async function sliceAndExport(
             id: item.id,
           });
         }
-      });
+      }
 
       const itemsForPlate: PrintItem[] = [];
 
       if (faceColorEnabled) {
-        onProgress("Building shared base + face color shells...");
+        onProgress(`Building face shells (plate ${quadrantIndex}/${totalQuadrants})...`);
+        throwIfExportAborted(signal);
         await yieldThread();
         itemsForPlate.push(...buildFaceOnlyPlateItems(clippedParts));
       } else if (mergeByColor) {
-        onProgress("Building manifold solids by color...");
+        onProgress(`Building solids by color (plate ${quadrantIndex}/${totalQuadrants})...`);
+        throwIfExportAborted(signal);
         await yieldThread();
 
         const colorGroups: Record<string, ClippedPart[]> = {};
@@ -494,7 +526,13 @@ export async function sliceAndExport(
           colorGroups[part.colorHex].push(part);
         });
 
-        for (const [hex, parts] of Object.entries(colorGroups)) {
+        const colorEntries = Object.entries(colorGroups);
+        for (let ci = 0; ci < colorEntries.length; ci++) {
+          const [hex, parts] = colorEntries[ci];
+          onProgress(`Extruding color ${ci + 1}/${colorEntries.length} (plate ${quadrantIndex})...`);
+          throwIfExportAborted(signal);
+          await yieldThread();
+
           const maxDepth = Math.max(...parts.map(p => p.totalDepth));
           let geom: THREE.BufferGeometry | null = null;
 
@@ -548,12 +586,15 @@ export async function sliceAndExport(
   }
 
   onProgress("Assembling 3MF archive...");
+  throwIfExportAborted(signal);
   await yieldThread();
 
   if (plates.length > 0) {
     return await buildMultiPlate3MF(plates, {
       printerModel,
-      groupIntoOneObject: mergeByColor
+      groupIntoOneObject: mergeByColor,
+      onProgress,
+      signal,
     });
   }
   return null;

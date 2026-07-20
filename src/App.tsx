@@ -158,6 +158,7 @@ function App() {
     handleConvertToLineArt,
     executeFuse,
     handleExport3MF,
+    handleCancelExport,
     handlePreviewShards,
     confirmAbsorbShards,
     handleSplitDisjoint,
@@ -265,9 +266,27 @@ function App() {
                 borderTop: '4px solid #3b82f6', borderRadius: '50%',
                 animation: 'spin 1s linear infinite', marginBottom: '1rem'
               }} />
-              <div style={{ color: '#f8fafc', fontSize: '1.2rem', fontWeight: 'bold', textAlign: 'center' }}>
+              <div style={{ color: '#f8fafc', fontSize: '1.2rem', fontWeight: 'bold', textAlign: 'center', maxWidth: '90%', padding: '0 1rem' }}>
                 {exportStatus || fuseStatus || isTracing}
               </div>
+              {exportStatus && (
+                <button
+                  type="button"
+                  onClick={handleCancelExport}
+                  style={{
+                    marginTop: '1.25rem',
+                    padding: '8px 16px',
+                    borderRadius: '6px',
+                    border: '1px solid #64748b',
+                    background: 'transparent',
+                    color: '#e2e8f0',
+                    cursor: 'pointer',
+                    fontSize: '0.85rem',
+                  }}
+                >
+                  Cancel export
+                </button>
+              )}
               <style>{`@keyframes spin { 100% { transform: rotate(360deg); } }`}</style>
             </div>
           )}

@@ -6,6 +6,7 @@ import {
   exportShapesToSTL,
   areExtrusionHeightsUniform,
   sliceAndExport,
+  ExportAbortError,
 } from '../lib/export-utils';
 import {
   extractInnerParts,
@@ -123,6 +124,7 @@ export function useAppController() {
   }, [canPrintFaceDown, printFaceDown]);
 
   const sceneRef = useRef<THREE.Group>(null);
+  const exportAbortRef = useRef<AbortController | null>(null);
   const pipelinePhaseRef = useRef<PipelinePhase>('idle');
 
   const applyShapeOpResult = useCallback((result: { updatedShapes: ShapeItem[]; newIds: string[] } | null): string[] | null => {
@@ -512,6 +514,8 @@ export function useAppController() {
     }
 
     setShowExportOptions(false);
+    const abortController = new AbortController();
+    exportAbortRef.current = abortController;
     try {
       const zipBlob = await sliceAndExport(
         shapes,
@@ -520,7 +524,8 @@ export function useAppController() {
         (msg) => setExportStatus(msg),
         printFaceDown && canPrintFaceDown,
         colorOnFaceOnly ? faceColorDepthMm : 0,
-        faceBaseColorHex
+        faceBaseColorHex,
+        abortController.signal
       );
 
       if (zipBlob) {
@@ -536,12 +541,19 @@ export function useAppController() {
         alert("Nothing to export.");
       }
     } catch (e) {
+      if (e instanceof ExportAbortError) return;
       console.error("Export 3MF failed", e);
       alert("Failed to export 3MF");
     } finally {
+      exportAbortRef.current = null;
       setExportStatus(null);
     }
   };
+
+  const handleCancelExport = useCallback(() => {
+    exportAbortRef.current?.abort();
+    setExportStatus(null);
+  }, []);
 
   const handleExportSTLAction = async () => {
     if (shapes.length === 0) return;
@@ -1435,7 +1447,7 @@ export function useAppController() {
     shapes,
     currentMeshColors, uniqueColors, selectedUniqueColors, toggleColorSelection, removeColorFromSelection,
     getColorDistance, handleAutoSelectSimilar, handleAutoExtrude, handleConvertToLineArt,
-    initiateFuse, executeFuse, executeMergeColors, handleExport3MF, handleExportSTLAction,
+    initiateFuse, executeFuse, executeMergeColors, handleExport3MF, handleCancelExport, handleExportSTLAction,
     generateSVGFromCurrentShapes, handleSaveProject, handleLoadProject,
     pendingShards, setPendingShards, ignoredShardColors, setIgnoredShardColors,
     isAbsorbingShards, setIsAbsorbingShards, isSplitting, setIsSplitting, splitStatus, setSplitStatus,
