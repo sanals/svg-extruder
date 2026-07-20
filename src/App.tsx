@@ -426,6 +426,7 @@ function App() {
           setFaceColorDepthMm={setFaceColorDepthMm}
           faceBaseColorHex={faceBaseColorHex}
           setFaceBaseColorHex={setFaceBaseColorHex}
+          uniqueColors={uniqueColors}
           thinWallParts={thinWallParts}
           handleSelectThinParts={handleSelectThinParts}
           handleExport3MF={handleExport3MF}
