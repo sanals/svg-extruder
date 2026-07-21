@@ -32,3 +32,21 @@ export function throwIfExportAborted(signal?: AbortSignal): void {
 
 export const yieldExportThread = () =>
   new Promise<void>((r) => requestAnimationFrame(() => setTimeout(r, 0)));
+
+/** Fast = current pipeline; robust = normalize + manifold-only + validation gates. */
+export type ExportMode = 'fast' | 'robust';
+
+/** When robust validation fails: abort entire export or skip bad objects. */
+export type RobustFailurePolicy = 'fail-fast' | 'skip-invalid';
+
+/** Clipper integer scale for robust 2D normalization (must match clipper-utils). */
+export const ROBUST_CLIPPER_SCALE = 10_000;
+
+/** Drop rings below this signed area in model units² during robust normalize. */
+export const ROBUST_MIN_RING_AREA = 1e-8;
+
+/** Max robust normalize retries with tighter area threshold per attempt. */
+export const ROBUST_MAX_NORMALIZE_ATTEMPTS = 2;
+
+/** Vertex weld tolerance after mm-scale in robust mode (tighter than fast 1e-3). */
+export const ROBUST_WELD_TOLERANCE_MM = 1e-4;

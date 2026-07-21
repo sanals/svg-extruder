@@ -3,6 +3,7 @@ import { Download } from 'lucide-react';
 import { HoverSlider } from './HoverSlider';
 import { THIN_WALL_THRESHOLD_MM, type ThinWallPart } from '../lib/thin-wall-check';
 import { EXPORT_VERTEX_SOFT_LIMIT, EXPORT_VERTEX_HARD_LIMIT } from '../lib/export-constants';
+import type { RobustFailurePolicy } from '../lib/export-constants';
 
 export type PrinterProfileType = 'A1 Mini (180x180)' | 'X1/P1/A1 (256x256)';
 
@@ -22,6 +23,10 @@ interface ExportDialogProps {
   setClearance: (val: number) => void;
   mergeBeforeExport: boolean;
   setMergeBeforeExport: (val: boolean) => void;
+  robustExportMode: boolean;
+  setRobustExportMode: (val: boolean) => void;
+  robustFailurePolicy: RobustFailurePolicy;
+  setRobustFailurePolicy: (val: RobustFailurePolicy) => void;
   printFaceDown: boolean;
   setPrintFaceDown: (val: boolean) => void;
   canPrintFaceDown: boolean;
@@ -58,6 +63,10 @@ export const ExportDialog: React.FC<ExportDialogProps> = ({
   setClearance,
   mergeBeforeExport,
   setMergeBeforeExport,
+  robustExportMode,
+  setRobustExportMode,
+  robustFailurePolicy,
+  setRobustFailurePolicy,
   printFaceDown,
   setPrintFaceDown,
   canPrintFaceDown,
@@ -177,6 +186,31 @@ export const ExportDialog: React.FC<ExportDialogProps> = ({
               <input type="checkbox" checked={mergeBeforeExport} onChange={(e) => setMergeBeforeExport(e.target.checked)} />
               Join objects for STL (Single Mesh)
             </label>
+
+            <label className="checkbox-label" style={{ fontSize: '0.75rem' }}>
+              <input type="checkbox" checked={robustExportMode} onChange={(e) => setRobustExportMode(e.target.checked)} />
+              Robust export mode (slower, safer)
+            </label>
+            {robustExportMode && (
+              <div style={{ paddingLeft: '1.5rem', display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+                <label className="checkbox-label" style={{ fontSize: '0.7rem', color: '#94a3b8' }}>
+                  On validation failure
+                </label>
+                <select
+                  className="custom-select"
+                  value={robustFailurePolicy}
+                  onChange={(e) => setRobustFailurePolicy(e.target.value as RobustFailurePolicy)}
+                  style={{ fontSize: '0.75rem' }}
+                >
+                  <option value="fail-fast">Stop export (fail-fast)</option>
+                  <option value="skip-invalid">Skip bad objects and continue</option>
+                </select>
+                <p style={{ fontSize: '0.65rem', color: '#94a3b8', margin: 0, lineHeight: 1.35 }}>
+                  Normalizes 2D contours, uses manifold-only extrusion, validates watertight topology before writing 3MF/STL.
+                  Recommended for dense multi-color SVGs with slicer repair warnings.
+                </p>
+              </div>
+            )}
 
             <label className="checkbox-label" style={{ fontSize: '0.75rem', opacity: canPrintFaceDown ? 1 : 0.45, cursor: canPrintFaceDown ? 'pointer' : 'not-allowed' }}>
               <input

@@ -7,7 +7,10 @@ import {
   areExtrusionHeightsUniform,
   sliceAndExport,
   ExportAbortError,
+  RobustExportError,
 } from '../lib/export-utils';
+import type { RobustFailurePolicy } from '../lib/export-constants';
+import type { RobustExportReport } from '../lib/robust-export-types';
 import {
   extractInnerParts,
   createBasePlate,
@@ -102,6 +105,8 @@ export function useAppController() {
   const [selectSizeThreshold, setSelectSizeThreshold] = useState<number>(0);
   const [shapeAreasCache, setShapeAreasCache] = useState<{ id: string, area: number }[] | null>(null);
   const [mergeBeforeExport, setMergeBeforeExport] = useState<boolean>(false);
+  const [robustExportMode, setRobustExportMode] = useState<boolean>(false);
+  const [robustFailurePolicy, setRobustFailurePolicy] = useState<RobustFailurePolicy>('fail-fast');
   const [printFaceDown, setPrintFaceDown] = useState<boolean>(false);
   const [colorOnFaceOnly, setColorOnFaceOnly] = useState<boolean>(false);
   const [faceColorDepthMm, setFaceColorDepthMm] = useState<number>(0.2);
@@ -537,6 +542,7 @@ export function useAppController() {
     setShowExportOptions(false);
     const abortController = new AbortController();
     exportAbortRef.current = abortController;
+    const robustSummaryRef: { value: RobustExportReport | null } = { value: null };
     try {
       const zipBlob = await sliceAndExport(
         shapes,
@@ -546,7 +552,12 @@ export function useAppController() {
         printFaceDown && canPrintFaceDown,
         colorOnFaceOnly ? faceColorDepthMm : 0,
         faceBaseColorHex,
-        abortController.signal
+        abortController.signal,
+        {
+          exportMode: robustExportMode ? 'robust' : 'fast',
+          failurePolicy: robustFailurePolicy,
+        },
+        (report) => { robustSummaryRef.value = report; },
       );
 
       if (zipBlob) {
@@ -558,11 +569,22 @@ export function useAppController() {
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
+        const robustSummary = robustSummaryRef.value;
+        if (robustSummary && robustSummary.skipped.length > 0) {
+          alert(
+            `Robust export completed with ${robustSummary.skipped.length} skipped object(s):\n` +
+            robustSummary.skipped.map((s) => `- ${s.objectName}: ${s.message}`).join('\n'),
+          );
+        }
       } else {
         alert("Nothing to export.");
       }
     } catch (e) {
       if (e instanceof ExportAbortError) return;
+      if (e instanceof RobustExportError) {
+        alert(`Robust export failed:\n${e.message}`);
+        return;
+      }
       console.error("Export 3MF failed", e);
       alert("Failed to export 3MF");
     } finally {
@@ -585,6 +607,7 @@ export function useAppController() {
     if (shapes.length === 0) return;
     setShowExportOptions(false);
     setExportStatus('Building STL (manifold)...');
+    const robustSummaryRef: { value: RobustExportReport | null } = { value: null };
     try {
       await exportShapesToSTL(
         shapes,
@@ -596,8 +619,24 @@ export function useAppController() {
         backingDepth,
         printFaceDown && canPrintFaceDown,
         (msg) => setExportStatus(msg),
+        {
+          exportMode: robustExportMode ? 'robust' : 'fast',
+          failurePolicy: robustFailurePolicy,
+        },
+        (report) => { robustSummaryRef.value = report; },
       );
+      const robustSummary = robustSummaryRef.value;
+      if (robustSummary && robustSummary.skipped.length > 0) {
+        alert(
+          `Robust STL export completed with ${robustSummary.skipped.length} skipped object(s):\n` +
+          robustSummary.skipped.map((s) => `- ${s.objectName}: ${s.message}`).join('\n'),
+        );
+      }
     } catch (e) {
+      if (e instanceof RobustExportError) {
+        alert(`Robust STL export failed:\n${e.message}`);
+        return;
+      }
       console.error(e);
       alert("Failed to export STL. Check console for details.");
     } finally {
@@ -1477,6 +1516,7 @@ export function useAppController() {
     selectedMeshIds, setSelectedMeshIds, vertexCount, setVertexCount, isTracing, setIsTracing,
     highlightStyle, setHighlightStyle, sealGaps, setSealGaps, backingDepth, setBackingDepth, cutOverlaps, setCutOverlaps,
     selectSizeThreshold, setSelectSizeThreshold, shapeAreasCache, setShapeAreasCache, mergeBeforeExport, setMergeBeforeExport,
+    robustExportMode, setRobustExportMode, robustFailurePolicy, setRobustFailurePolicy,
     printFaceDown, setPrintFaceDown, canPrintFaceDown,
     colorOnFaceOnly, setColorOnFaceOnly, faceColorDepthMm, setFaceColorDepthMm,
     faceBaseColorHex, setFaceBaseColorHex,

@@ -5,16 +5,64 @@ import * as THREE from 'three';
 import * as BufferGeometryUtils from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { STLExporter } from 'three/examples/jsm/exporters/STLExporter.js';
 import * as ClipperLib from 'clipper-lib';
-import { ensureManifoldReady, extrudeMultiPolygonManifold } from './manifold-extrude';
+import { ensureManifoldReady, extrudeMultiPolygonManifold, extrudeMultiPolygonRobust, remanifoldBufferGeometry } from './manifold-extrude';
+import { normalizeMultiPolygonForRobustExport } from '../lib/clipper-utils';
 import {
   EXPORT_YIELD_EVERY_SHAPES,
+  ROBUST_MAX_NORMALIZE_ATTEMPTS,
+  ROBUST_MIN_RING_AREA,
+  ROBUST_WELD_TOLERANCE_MM,
   throwIfExportAborted,
   yieldExportThread,
 } from './export-constants';
+import type { ExportOptions, MeshTopologyReport, RobustExportDiagnostic, RobustExportReport } from './robust-export-types';
+import { RobustExportError } from './robust-export-types';
 
 export { ExportAbortError, EXPORT_VERTEX_SOFT_LIMIT, EXPORT_VERTEX_HARD_LIMIT } from './export-constants';
+export { RobustExportError, type ExportOptions, type RobustExportReport, type MeshTopologyReport } from './robust-export-types';
 
 const yieldThread = yieldExportThread;
+
+/** Edge-incidence topology check before 3MF serialization (robust mode gate). */
+export function validateMeshTopology(geo: THREE.BufferGeometry): MeshTopologyReport {
+  const index = geo.getIndex();
+  const pos = geo.getAttribute('position');
+  if (!index || !pos) {
+    return { openEdges: 0, nonManifoldEdges: 0, degenerateTriangles: 0, valid: false };
+  }
+
+  const edges = new Map<string, number>();
+  let degenerateTriangles = 0;
+  const arr = index.array as ArrayLike<number>;
+
+  for (let i = 0; i + 2 < arr.length; i += 3) {
+    const a = arr[i];
+    const b = arr[i + 1];
+    const c = arr[i + 2];
+    if (a === b || b === c || a === c) {
+      degenerateTriangles += 1;
+      continue;
+    }
+    for (const [x, y] of [[a, b], [b, c], [c, a]] as const) {
+      const key = x < y ? `${x},${y}` : `${y},${x}`;
+      edges.set(key, (edges.get(key) ?? 0) + 1);
+    }
+  }
+
+  let openEdges = 0;
+  let nonManifoldEdges = 0;
+  for (const count of edges.values()) {
+    if (count === 1) openEdges += 1;
+    else if (count > 2) nonManifoldEdges += 1;
+  }
+
+  return {
+    openEdges,
+    nonManifoldEdges,
+    degenerateTriangles,
+    valid: openEdges === 0 && nonManifoldEdges === 0 && degenerateTriangles === 0,
+  };
+}
 
 /** Reverse triangle winding (needed after odd number of axis reflections). */
 export function flipTriangleWinding(geo: THREE.BufferGeometry): void {
@@ -131,7 +179,9 @@ export async function sliceAndExport(
   printFaceDown: boolean = false,
   faceColorDepthMm: number = 0,
   baseColorHex: string = 'ffffff',
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  exportOptions?: ExportOptions,
+  onRobustReport?: (report: RobustExportReport) => void,
 ): Promise<Blob | null> {
   // _sealGaps is preview-only (viewport bevel); export never enables ExtrudeGeometry bevel.
   void _sealGaps;
@@ -153,8 +203,23 @@ export async function sliceAndExport(
 
   onProgress("Initializing manifold engine...");
   throwIfExportAborted(signal);
-  await ensureManifoldReady();
+  const manifoldMod = await ensureManifoldReady();
   await yieldThread();
+
+  const exportMode = exportOptions?.exportMode ?? 'fast';
+  const failurePolicy = exportOptions?.failurePolicy ?? 'fail-fast';
+  const robustReport: RobustExportReport = { mode: exportMode, exportedCount: 0, skipped: [] };
+
+  const handleRobustFailure = (diag: RobustExportDiagnostic): null => {
+    if (failurePolicy === 'fail-fast') {
+      throw new RobustExportError(
+        `${diag.objectName}: ${diag.message} (${diag.stage})`,
+        [diag, ...robustReport.skipped],
+      );
+    }
+    robustReport.skipped.push(diag);
+    return null;
+  };
 
   onProgress("Analyzing model dimensions...");
   throwIfExportAborted(signal);
@@ -262,32 +327,120 @@ export async function sliceAndExport(
    */
   const finalizeScaledGeom = (
     geom: THREE.BufferGeometry,
-    opts?: { skipFaceDown?: boolean }
+    opts?: { skipFaceDown?: boolean },
+    weldTolerance: number = 1e-3,
   ): THREE.BufferGeometry => {
     applyExportScale(geom);
     if (doFlipFaceDown && !opts?.skipFaceDown) {
       flipFaceDown(geom);
     } else {
-      // Face-up, or face-only already laid out bed-ready: only Y reflection → fix winding
       flipTriangleWinding(geom);
     }
-    return hardenExportGeometry(geom, 1e-3);
+    return hardenExportGeometry(geom, weldTolerance);
   };
 
-  const buildScaledSolidAtZ = (
+  const buildRobustSolid = async (
+    multiPoly: MultiPolygon,
+    depth: number,
+    meta: { id: string; name: string; colorHex?: string },
+    finalizeOpts?: { skipFaceDown?: boolean; zOffset?: number },
+  ): Promise<THREE.BufferGeometry | null> => {
+    let minArea = ROBUST_MIN_RING_AREA;
+
+    for (let attempt = 0; attempt < ROBUST_MAX_NORMALIZE_ATTEMPTS; attempt++) {
+      throwIfExportAborted(signal);
+      onProgress(`Normalizing ${meta.name}${attempt > 0 ? ` (retry ${attempt + 1})` : ''}...`);
+      await yieldThread();
+
+      const { multiPoly: normalized } = normalizeMultiPolygonForRobustExport(multiPoly, minArea);
+      if (normalized.length === 0) {
+        if (attempt < ROBUST_MAX_NORMALIZE_ATTEMPTS - 1) {
+          minArea *= 10;
+          continue;
+        }
+        return handleRobustFailure({
+          objectId: meta.id,
+          objectName: meta.name,
+          colorHex: meta.colorHex,
+          stage: 'normalize',
+          message: 'No polygons after normalization',
+        });
+      }
+
+      onProgress(`Extruding robust ${meta.name}...`);
+      await yieldThread();
+      const extrudeResult = extrudeMultiPolygonRobust(normalized, depth, manifoldMod);
+      if (!extrudeResult.ok) {
+        if (attempt < ROBUST_MAX_NORMALIZE_ATTEMPTS - 1) {
+          minArea *= 10;
+          continue;
+        }
+        return handleRobustFailure({
+          objectId: meta.id,
+          objectName: meta.name,
+          colorHex: meta.colorHex,
+          stage: 'extrude',
+          message: extrudeResult.message,
+        });
+      }
+
+      let geom = extrudeResult.geometry;
+      if (finalizeOpts?.zOffset) geom.translate(0, 0, finalizeOpts.zOffset);
+      geom = finalizeScaledGeom(geom, finalizeOpts, ROBUST_WELD_TOLERANCE_MM);
+
+      onProgress(`Remanifold ${meta.name}...`);
+      await yieldThread();
+      const repaired = remanifoldBufferGeometry(geom, manifoldMod);
+      if (repaired) geom = repaired;
+
+      onProgress(`Validating ${meta.name}...`);
+      await yieldThread();
+      const topology = validateMeshTopology(geom);
+      if (topology.valid) {
+        robustReport.exportedCount += 1;
+        return geom;
+      }
+
+      if (attempt < ROBUST_MAX_NORMALIZE_ATTEMPTS - 1) {
+        minArea *= 10;
+        continue;
+      }
+
+      return handleRobustFailure({
+        objectId: meta.id,
+        objectName: meta.name,
+        colorHex: meta.colorHex,
+        stage: 'validate',
+        message: `open=${topology.openEdges} nm=${topology.nonManifoldEdges} deg=${topology.degenerateTriangles}`,
+        topology,
+      });
+    }
+
+    return null;
+  };
+
+  const buildScaledSolidAtZ = async (
     multiPoly: MultiPolygon,
     depth: number,
     zOffsetModel: number = 0,
-    opts?: { skipFaceDown?: boolean }
-  ): THREE.BufferGeometry | null => {
+    opts?: { skipFaceDown?: boolean },
+    meta?: { id: string; name: string; colorHex?: string },
+  ): Promise<THREE.BufferGeometry | null> => {
+    if (exportMode === 'robust' && meta) {
+      return buildRobustSolid(multiPoly, depth, meta, { ...opts, zOffset: zOffsetModel });
+    }
     const geom = extrudeMultiPolyForExport(multiPoly, depth);
     if (!geom) return null;
     if (zOffsetModel !== 0) geom.translate(0, 0, zOffsetModel);
     return finalizeScaledGeom(geom, opts);
   };
 
-  const buildScaledSolid = (multiPoly: MultiPolygon, totalDepth: number): THREE.BufferGeometry | null => {
-    return buildScaledSolidAtZ(multiPoly, totalDepth, 0);
+  const buildScaledSolid = async (
+    multiPoly: MultiPolygon,
+    totalDepth: number,
+    meta?: { id: string; name: string; colorHex?: string },
+  ): Promise<THREE.BufferGeometry | null> => {
+    return buildScaledSolidAtZ(multiPoly, totalDepth, 0, undefined, meta);
   };
 
   /**
@@ -295,14 +448,13 @@ export async function sliceAndExport(
    * When printFaceDown: build bed-ready Z (face at 0, body above) and skip per-mesh flipFaceDown,
    * which would otherwise nest both meshes at z=0 and cause z-fighting.
    */
-  const buildFaceOnlyPlateItems = (parts: ClippedPart[]): PrintItem[] => {
+  const buildFaceOnlyPlateItems = async (parts: ClippedPart[]): Promise<PrintItem[]> => {
     if (parts.length === 0 || faceDepthModel <= 0) return [];
 
     const maxDepth = Math.max(...parts.map(p => p.totalDepth));
     const faceD = Math.min(faceDepthModel, maxDepth);
     const bodyD = maxDepth - faceD;
     const items: PrintItem[] = [];
-    // Bed-ready layout when face-down; otherwise color on top of body
     const bedReady = doFlipFaceDown;
     const faceOnlyOpts = bedReady ? { skipFaceDown: true } : undefined;
     const bodyZ = bedReady ? faceD : 0;
@@ -312,7 +464,11 @@ export async function sliceAndExport(
       try {
         const united = unionMultiPolygons(parts.map(p => p.multiPoly));
         if (united.length > 0) {
-          const bodyGeom = buildScaledSolidAtZ(united, bodyD, bodyZ, faceOnlyOpts);
+          const bodyGeom = await buildScaledSolidAtZ(united, bodyD, bodyZ, faceOnlyOpts, {
+            id: 'faceonly_base',
+            name: 'FaceOnly_Base',
+            colorHex: baseColorPrint,
+          });
           if (bodyGeom) {
             items.push({
               id: `base_${Math.random().toString(36).substring(7)}`,
@@ -323,14 +479,18 @@ export async function sliceAndExport(
           }
         }
       } catch (err) {
+        if (err instanceof RobustExportError) throw err;
         console.error('Failed to union shared base silhouette', err);
-        // Fallback: per-part bodies only if union fails (worse, but better than empty)
         for (const part of parts) {
           const partFace = Math.min(faceDepthModel, part.totalDepth);
           const partBody = part.totalDepth - partFace;
           if (partBody <= 1e-8 || part.multiPoly.length === 0) continue;
           const partBodyZ = bedReady ? partFace : 0;
-          const g = buildScaledSolidAtZ(part.multiPoly, partBody, partBodyZ, faceOnlyOpts);
+          const g = await buildScaledSolidAtZ(part.multiPoly, partBody, partBodyZ, faceOnlyOpts, {
+            id: part.id,
+            name: `FaceOnly_Base_${part.id}`,
+            colorHex: baseColorPrint,
+          });
           if (g) {
             items.push({
               id: `base_${part.id}`,
@@ -354,9 +514,14 @@ export async function sliceAndExport(
       try {
         const united = unionMultiPolygons(group.map(p => p.multiPoly));
         if (united.length > 0) {
-          faceGeom = buildScaledSolidAtZ(united, faceD, faceZ, faceOnlyOpts);
+          faceGeom = await buildScaledSolidAtZ(united, faceD, faceZ, faceOnlyOpts, {
+            id: `face_${hex}`,
+            name: `FaceOnly_${hex}`,
+            colorHex: hex,
+          });
         }
       } catch (err) {
+        if (err instanceof RobustExportError) throw err;
         console.error('Failed to union face color group', hex, err);
       }
 
@@ -367,7 +532,11 @@ export async function sliceAndExport(
           const partFace = Math.min(faceDepthModel, part.totalDepth);
           const partBody = part.totalDepth - partFace;
           const partFaceZ = bedReady ? 0 : partBody;
-          const g = buildScaledSolidAtZ(part.multiPoly, partFace, partFaceZ, faceOnlyOpts);
+          const g = await buildScaledSolidAtZ(part.multiPoly, partFace, partFaceZ, faceOnlyOpts, {
+            id: part.id,
+            name: `FaceOnly_${hex}_${part.id}`,
+            colorHex: hex,
+          });
           if (g) geoms.push(g);
         }
         if (geoms.length > 0) faceGeom = concatGeometries(geoms);
@@ -508,13 +677,17 @@ export async function sliceAndExport(
         }
       }
 
+      onProgress(`Clipping done (plate ${quadrantIndex}/${totalQuadrants}), building solids...`);
+      throwIfExportAborted(signal);
+      await yieldThread();
+
       const itemsForPlate: PrintItem[] = [];
 
       if (faceColorEnabled) {
         onProgress(`Building face shells (plate ${quadrantIndex}/${totalQuadrants})...`);
         throwIfExportAborted(signal);
         await yieldThread();
-        itemsForPlate.push(...buildFaceOnlyPlateItems(clippedParts));
+        itemsForPlate.push(...(await buildFaceOnlyPlateItems(clippedParts)));
       } else if (mergeByColor) {
         onProgress(`Building solids by color (plate ${quadrantIndex}/${totalQuadrants})...`);
         throwIfExportAborted(signal);
@@ -529,7 +702,7 @@ export async function sliceAndExport(
         const colorEntries = Object.entries(colorGroups);
         for (let ci = 0; ci < colorEntries.length; ci++) {
           const [hex, parts] = colorEntries[ci];
-          onProgress(`Extruding color ${ci + 1}/${colorEntries.length} (plate ${quadrantIndex})...`);
+          onProgress(`Uniting color ${ci + 1}/${colorEntries.length} (${parts.length} parts, plate ${quadrantIndex})...`);
           throwIfExportAborted(signal);
           await yieldThread();
 
@@ -539,9 +712,16 @@ export async function sliceAndExport(
           try {
             const united = unionMultiPolygons(parts.map(p => p.multiPoly));
             if (united.length > 0) {
-              geom = buildScaledSolid(united, maxDepth);
+              onProgress(`Extruding color ${ci + 1}/${colorEntries.length} (${united.length} islands, plate ${quadrantIndex})...`);
+              await yieldThread();
+              geom = await buildScaledSolid(united, maxDepth, {
+                id: `color_${hex}`,
+                name: `ColorGroup_${hex}`,
+                colorHex: hex,
+              });
             }
           } catch (err) {
+            if (err instanceof RobustExportError) throw err;
             console.error("Failed to union geometries for color", hex, err);
           }
 
@@ -549,7 +729,11 @@ export async function sliceAndExport(
             const geoms: THREE.BufferGeometry[] = [];
             for (const part of parts) {
               if (part.multiPoly.length === 0) continue;
-              const g = buildScaledSolid(part.multiPoly, part.totalDepth);
+              const g = await buildScaledSolid(part.multiPoly, part.totalDepth, {
+                id: part.id,
+                name: `Part_${part.id}`,
+                colorHex: hex,
+              });
               if (g) geoms.push(g);
             }
             if (geoms.length === 0) continue;
@@ -564,9 +748,19 @@ export async function sliceAndExport(
           });
         }
       } else {
-        for (const part of clippedParts) {
+        for (let pi = 0; pi < clippedParts.length; pi++) {
+          const part = clippedParts[pi];
           if (part.multiPoly.length === 0) continue;
-          const geom = buildScaledSolid(part.multiPoly, part.totalDepth);
+          if (pi > 0 && pi % 20 === 0) {
+            onProgress(`Extruding part ${pi + 1}/${clippedParts.length} (plate ${quadrantIndex})...`);
+            throwIfExportAborted(signal);
+            await yieldThread();
+          }
+          const geom = await buildScaledSolid(part.multiPoly, part.totalDepth, {
+            id: part.id,
+            name: `Part_${part.id}`,
+            colorHex: part.colorHex,
+          });
           if (!geom) continue;
           itemsForPlate.push({
             id: part.id,
@@ -588,6 +782,10 @@ export async function sliceAndExport(
   onProgress("Assembling 3MF archive...");
   throwIfExportAborted(signal);
   await yieldThread();
+
+  if (exportMode === 'robust' && onRobustReport) {
+    onRobustReport(robustReport);
+  }
 
   if (plates.length > 0) {
     return await buildMultiPlate3MF(plates, {
@@ -616,6 +814,8 @@ export async function exportShapesToSTL(
   backingDepth: number,
   printFaceDown: boolean = false,
   onProgress?: (msg: string) => void,
+  exportOptions?: ExportOptions,
+  onRobustReport?: (report: RobustExportReport) => void,
 ): Promise<void> {
   if (shapesWithColors.length === 0) {
     throw new Error('No shapes to export');
@@ -623,8 +823,20 @@ export async function exportShapesToSTL(
 
   const progress = onProgress ?? (() => {});
   progress('Initializing manifold engine...');
-  await ensureManifoldReady();
+  const manifoldMod = await ensureManifoldReady();
   await yieldThread();
+
+  const exportMode = exportOptions?.exportMode ?? 'fast';
+  const failurePolicy = exportOptions?.failurePolicy ?? 'fail-fast';
+  const robustReport: RobustExportReport = { mode: exportMode, exportedCount: 0, skipped: [] };
+
+  const handleRobustFailure = (diag: RobustExportDiagnostic): null => {
+    if (failurePolicy === 'fail-fast') {
+      throw new RobustExportError(`${diag.objectName}: ${diag.message}`, [diag, ...robustReport.skipped]);
+    }
+    robustReport.skipped.push(diag);
+    return null;
+  };
 
   const customScale = customScalePercent / 100.0;
   const xyScale = 0.1 * customScale;
@@ -636,17 +848,61 @@ export async function exportShapesToSTL(
   );
   const doFlipFaceDown = printFaceDown && heightsUniform;
 
-  const finalizeGeom = (geom: THREE.BufferGeometry): THREE.BufferGeometry => {
+  const finalizeGeom = (geom: THREE.BufferGeometry, weldTolerance = 1e-3): THREE.BufferGeometry => {
     geom.applyMatrix4(new THREE.Matrix4().makeScale(xyScale, -xyScale, zScale));
     if (doFlipFaceDown) {
       flipFaceDown(geom);
     } else {
       flipTriangleWinding(geom);
     }
-    return hardenExportGeometry(geom, 1e-3);
+    return hardenExportGeometry(geom, weldTolerance);
   };
 
-  const buildSolid = (multiPoly: MultiPolygon, totalDepth: number): THREE.BufferGeometry | null => {
+  const buildRobustSolidStl = async (
+    multiPoly: MultiPolygon,
+    totalDepth: number,
+    meta: { id: string; name: string },
+  ): Promise<THREE.BufferGeometry | null> => {
+    let minArea = ROBUST_MIN_RING_AREA;
+    for (let attempt = 0; attempt < ROBUST_MAX_NORMALIZE_ATTEMPTS; attempt++) {
+      progress(`Normalizing ${meta.name}...`);
+      await yieldThread();
+      const { multiPoly: normalized } = normalizeMultiPolygonForRobustExport(multiPoly, minArea);
+      const extrudeResult = extrudeMultiPolygonRobust(normalized, totalDepth, manifoldMod);
+      if (!extrudeResult.ok) {
+        if (attempt < ROBUST_MAX_NORMALIZE_ATTEMPTS - 1) { minArea *= 10; continue; }
+        return handleRobustFailure({ objectId: meta.id, objectName: meta.name, stage: 'extrude', message: extrudeResult.message });
+      }
+      let geom = finalizeGeom(extrudeResult.geometry, ROBUST_WELD_TOLERANCE_MM);
+      progress(`Remanifold ${meta.name}...`);
+      await yieldThread();
+      const repaired = remanifoldBufferGeometry(geom, manifoldMod);
+      if (repaired) geom = repaired;
+      const topology = validateMeshTopology(geom);
+      if (topology.valid) {
+        robustReport.exportedCount += 1;
+        return geom;
+      }
+      if (attempt < ROBUST_MAX_NORMALIZE_ATTEMPTS - 1) { minArea *= 10; continue; }
+      return handleRobustFailure({
+        objectId: meta.id,
+        objectName: meta.name,
+        stage: 'validate',
+        message: `open=${topology.openEdges} nm=${topology.nonManifoldEdges}`,
+        topology,
+      });
+    }
+    return null;
+  };
+
+  const buildSolid = async (
+    multiPoly: MultiPolygon,
+    totalDepth: number,
+    meta?: { id: string; name: string },
+  ): Promise<THREE.BufferGeometry | null> => {
+    if (exportMode === 'robust' && meta) {
+      return buildRobustSolidStl(multiPoly, totalDepth, meta);
+    }
     const geom = extrudeMultiPolyForExport(multiPoly, totalDepth);
     if (!geom) return null;
     return finalizeGeom(geom);
@@ -681,15 +937,16 @@ export async function exportShapesToSTL(
     try {
       const united = unionMultiPolygons(parts.map(p => p.multiPoly));
       if (united.length > 0) {
-        geom = buildSolid(united, maxDepth);
+        geom = await buildSolid(united, maxDepth, { id: 'stl_merged', name: 'STL_Merged' });
       }
     } catch (err) {
+      if (err instanceof RobustExportError) throw err;
       console.error('STL union failed; falling back to per-part solids', err);
     }
     if (!geom) {
       const geoms: THREE.BufferGeometry[] = [];
       for (const part of parts) {
-        const g = buildSolid(part.multiPoly, part.totalDepth);
+        const g = await buildSolid(part.multiPoly, part.totalDepth, { id: part.id, name: `Part_${part.id}` });
         if (g) geoms.push(g);
       }
       if (geoms.length === 0) throw new Error('Failed to build STL geometry');
@@ -704,7 +961,10 @@ export async function exportShapesToSTL(
         progress(`Building solid ${i + 1}/${parts.length}...`);
         await yieldThread();
       }
-      const g = buildSolid(parts[i].multiPoly, parts[i].totalDepth);
+      const g = await buildSolid(parts[i].multiPoly, parts[i].totalDepth, {
+        id: parts[i].id,
+        name: `Part_${parts[i].id}`,
+      });
       if (g) geometries.push(g);
     }
   }
@@ -715,6 +975,10 @@ export async function exportShapesToSTL(
 
   progress('Writing STL file...');
   await yieldThread();
+
+  if (exportMode === 'robust' && onRobustReport) {
+    onRobustReport(robustReport);
+  }
 
   const group = new THREE.Group();
   for (const geom of geometries) {

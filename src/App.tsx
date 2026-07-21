@@ -62,6 +62,10 @@ function App() {
     cutOverlaps,
     selectSizeThreshold,
     mergeBeforeExport,
+    robustExportMode,
+    setRobustExportMode,
+    robustFailurePolicy,
+    setRobustFailurePolicy,
     printFaceDown,
     canPrintFaceDown,
     colorOnFaceOnly,
@@ -446,6 +450,10 @@ function App() {
           setClearance={setClearance}
           mergeBeforeExport={mergeBeforeExport}
           setMergeBeforeExport={setMergeBeforeExport}
+          robustExportMode={robustExportMode}
+          setRobustExportMode={setRobustExportMode}
+          robustFailurePolicy={robustFailurePolicy}
+          setRobustFailurePolicy={setRobustFailurePolicy}
           printFaceDown={printFaceDown}
           setPrintFaceDown={setPrintFaceDown}
           canPrintFaceDown={canPrintFaceDown}
